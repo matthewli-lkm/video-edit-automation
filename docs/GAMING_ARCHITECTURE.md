@@ -147,6 +147,7 @@ Then request a game-only render with:
     "profile": "preview",
     "aspect_ratio": "source",
     "frames_per_second": 60,
+    "transition_duration_seconds": 0.25,
     "audio_output_mode": "game_only"
   }
 }
@@ -155,6 +156,10 @@ Then request a game-only render with:
 The render preset defaults to 60 fps. When any selected source segment is below 59 fps, the
 renderer automatically falls back to 30 fps instead of manufacturing apparent smoothness by
 duplicating frames. An explicitly selected non-60 frame rate remains unchanged.
+
+Every cut between selected highlight segments uses a synchronized 0.25-second video dip-to-black
+and audio fade by default. The first frame and final frame are not faded. Set
+`transition_duration_seconds` between 0 and 2 seconds, or use 0 to disable transitions.
 
 The renderer refuses `game_only` unless an individually addressable track has the `game` role. If
 game and microphone were recorded into one mixed track, clean microphone removal is not reliable;

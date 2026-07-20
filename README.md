@@ -26,6 +26,7 @@ This initial scaffold provides:
 - a Windows OBS companion plus Mac SMB/local inbox monitor with READY, checksum, idempotency, and
   reconnect-safe ingestion;
 - audio-track roles plus safe game-only rendering when game and microphone tracks are separate;
+- configurable dip-to-black video and audio transitions at every selected highlight cut;
 - dry-run FFmpeg command generation and background preview/final rendering;
 - unit and media integration tests.
 

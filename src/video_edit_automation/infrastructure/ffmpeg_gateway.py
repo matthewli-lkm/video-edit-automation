@@ -244,16 +244,31 @@ class FFmpegGateway:
         for index, segment in enumerate(plan.segments):
             start = f"{segment.source_in_seconds:.6f}"
             end = f"{segment.source_out_seconds:.6f}"
+            transition_duration = min(
+                preset.transition_duration_seconds,
+                segment.duration_seconds / 2,
+            )
+            transition = f"{transition_duration:.6f}"
+            video_transitions = ""
+            audio_transitions = ""
+            if transition_duration > 0 and index > 0:
+                video_transitions += f",fade=t=in:st=0:d={transition}:color=black"
+                audio_transitions += f",afade=t=in:st=0:d={transition}"
+            if transition_duration > 0 and index < len(plan.segments) - 1:
+                fade_out_start = f"{segment.duration_seconds - transition_duration:.6f}"
+                video_transitions += f",fade=t=out:st={fade_out_start}:d={transition}:color=black"
+                audio_transitions += f",afade=t=out:st={fade_out_start}:d={transition}"
             filters.append(
                 f"[{index}:v:0]trim=start={start}:end={end},setpts=PTS-STARTPTS,"
                 f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
                 f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
-                f"setsar=1,fps={frames_per_second},format=yuv420p[v{index}]"
+                f"setsar=1,fps={frames_per_second},format=yuv420p"
+                f"{video_transitions}[v{index}]"
             )
             audio_input = self._audio_input(index, ordered_assets[index], preset.audio_output_mode)
             filters.append(
                 f"{audio_input}atrim=start={start}:end={end},"
-                f"asetpts=PTS-STARTPTS,aresample=48000[a{index}]"
+                f"asetpts=PTS-STARTPTS,aresample=48000{audio_transitions}[a{index}]"
             )
             concat_inputs.extend([f"[v{index}]", f"[a{index}]"])
         filters.append(

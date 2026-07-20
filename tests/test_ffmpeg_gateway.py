@@ -53,6 +53,27 @@ def _plan(project_id, asset: MediaAsset) -> EditPlan:
     )
 
 
+def _two_segment_plan(project_id, asset: MediaAsset) -> EditPlan:
+    return EditPlan(
+        project_id=project_id,
+        title="Transition test",
+        summary="Two segments with one cut",
+        brief=EditBrief(objective="Test a smooth, visible cut"),
+        segments=[
+            TimelineSegment(
+                asset_id=asset.id,
+                source_in_seconds=0,
+                source_out_seconds=0.8,
+            ),
+            TimelineSegment(
+                asset_id=asset.id,
+                source_in_seconds=1,
+                source_out_seconds=1.8,
+            ),
+        ],
+    )
+
+
 def test_command_uses_argument_list_and_typed_filter(tmp_path: Path) -> None:
     project_id = uuid4()
     suspicious_path = tmp_path / "clip; touch never.mov"
@@ -93,6 +114,36 @@ def test_default_render_falls_back_to_30_fps_for_slower_source(tmp_path: Path) -
         RenderPreset(),
     )
     assert "fps=30" in command[command.index("-filter_complex") + 1]
+
+
+def test_multisegment_render_fades_video_and_audio_at_every_cut(tmp_path: Path) -> None:
+    project_id = uuid4()
+    asset = _asset(project_id, tmp_path / "source.mp4")
+    command = FFmpegGateway().build_render_command(
+        _two_segment_plan(project_id, asset),
+        {asset.id: asset},
+        tmp_path / "output.mp4",
+        RenderPreset(),
+    )
+    graph = command[command.index("-filter_complex") + 1]
+    assert "fade=t=out:st=0.550000:d=0.250000:color=black[v0]" in graph
+    assert "afade=t=out:st=0.550000:d=0.250000[a0]" in graph
+    assert "fade=t=in:st=0:d=0.250000:color=black[v1]" in graph
+    assert "afade=t=in:st=0:d=0.250000[a1]" in graph
+
+
+def test_cut_transitions_can_be_disabled(tmp_path: Path) -> None:
+    project_id = uuid4()
+    asset = _asset(project_id, tmp_path / "source.mp4")
+    command = FFmpegGateway().build_render_command(
+        _two_segment_plan(project_id, asset),
+        {asset.id: asset},
+        tmp_path / "output.mp4",
+        RenderPreset(transition_duration_seconds=0),
+    )
+    graph = command[command.index("-filter_complex") + 1]
+    assert "fade=" not in graph
+    assert "afade=" not in graph
 
 
 def test_game_only_render_selects_explicit_game_track(tmp_path: Path) -> None:
