@@ -1,0 +1,68 @@
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+
+from video_edit_automation import __version__
+from video_edit_automation.api.routes import router
+from video_edit_automation.application.ports import EditPlanner, MediaGateway, Repository
+from video_edit_automation.config import Settings
+from video_edit_automation.domain.errors import (
+    DomainError,
+    EntityNotFoundError,
+    InvalidEditPlanError,
+    MediaToolError,
+    PathNotAllowedError,
+    PlannerResponseError,
+    PlannerUnavailableError,
+    UnsupportedMediaError,
+)
+from video_edit_automation.runtime import build_container
+
+
+def _status_for_error(error: DomainError) -> int:
+    if isinstance(error, EntityNotFoundError):
+        return 404
+    if isinstance(error, PathNotAllowedError):
+        return 403
+    if isinstance(error, UnsupportedMediaError):
+        return 415
+    if isinstance(error, PlannerUnavailableError):
+        return 503
+    if isinstance(error, (InvalidEditPlanError, MediaToolError, PlannerResponseError)):
+        return 422
+    return 400
+
+
+def create_app(
+    settings: Settings | None = None,
+    repository: Repository | None = None,
+    media: MediaGateway | None = None,
+    planner: EditPlanner | None = None,
+) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        app.state.container = build_container(settings, repository, media, planner)
+        yield
+
+    app = FastAPI(
+        title="Video Edit Automation",
+        version=__version__,
+        description="Local-first API for validated, AI-assisted video edit decisions.",
+        lifespan=lifespan,
+    )
+
+    @app.exception_handler(DomainError)
+    async def handle_domain_error(_request: Request, error: DomainError) -> JSONResponse:
+        return JSONResponse(
+            status_code=_status_for_error(error),
+            content={"detail": str(error), "error_type": type(error).__name__},
+        )
+
+    app.include_router(router)
+    return app
+
+
+app = create_app()
