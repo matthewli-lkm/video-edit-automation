@@ -31,6 +31,10 @@ non-linear editor.
 15. Treat OBS, ScreenCaptureKit, Windows Graphics Capture, and external files as adapters to one
     capture-session contract; never fork editing behavior by operating system.
 16. A registered capture session does not imply that this backend performed or controlled capture.
+17. Never ingest a shared-folder recording without `READY`, containment checks, declared size, and
+    checksum verification; copy it to managed local storage before probing or rendering.
+18. Treat missing SMB mounts and partial packages as recoverable states, and make package ingestion
+    idempotent by stable session ID.
 
 ## Definition of done
 

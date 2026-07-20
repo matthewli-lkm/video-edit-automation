@@ -23,12 +23,15 @@ This initial scaffold provides:
   externally recorded files;
 - deterministic League of Legends recognition from supplied process/window observations;
 - clock-synchronized manual bookmarks that can directly create a MOBA highlight plan;
+- a Windows OBS companion plus Mac SMB/local inbox monitor with READY, checksum, idempotency, and
+  reconnect-safe ingestion;
 - audio-track roles plus safe game-only rendering when game and microphone tracks are separate;
 - dry-run FFmpeg command generation and background preview/final rendering;
 - unit and media integration tests.
 
 Live OS capture, automatic game-event detectors, transcription, captions, and a timeline UI are
-later vertical slices. See [the vibe-coding plan](docs/VIBE_CODING_PLAN.md) and
+later vertical slices. See the [cross-device OBS guide](docs/CROSS_DEVICE_OBS.md),
+[vibe-coding plan](docs/VIBE_CODING_PLAN.md), and
 [gaming architecture](docs/GAMING_ARCHITECTURE.md).
 
 ## Why this shape
@@ -84,12 +87,13 @@ the generic FPS or MOBA profile, and submit normalized event/audio/motion/manual
 evidence-linked highlight plan. Automatic event detection and native recording adapters are
 intentionally not part of the backend foundation yet.
 
-On Windows, the first practical capture path is an OBS `.mkv` recording with game audio and
-microphone on separate tracks. Register the imported asset as a capture session, include a League
-process/window observation or explicit game override, add bookmarks, and create a highlight plan
-from that session. The same manifest supports OBS on macOS and future native capture helpers.
+On Windows, the companion can now discover stable OBS recordings, package them into a shared Ready
+folder, and let the Mac inbox automatically verify, copy, probe, and register the League session.
+Game audio and microphone should remain on separate tracks. Automatic League event detection and
+automatic plan/render triggering are still later milestones.
 
-The API currently references source media rather than copying gigabytes into the project directory. Generated files always go under the tool's own data directory, and source files are never overwritten.
+Manual imports reference source media in place. Capture-inbox imports are copied and checksum
+verified into the Mac's project workspace before editing. Source files are never overwritten.
 
 ## Local AI on the Mac
 
@@ -105,6 +109,7 @@ The media pipeline and LLM can also live on separate machines later: keep this M
 ## Repository guide
 
 - [Architecture and contracts](docs/ARCHITECTURE.md)
+- [Windows OBS to Mac automation](docs/CROSS_DEVICE_OBS.md)
 - [Gaming capture, signals, profiles, and audio](docs/GAMING_ARCHITECTURE.md)
 - [Vibe-coding roadmap and prompts](docs/VIBE_CODING_PLAN.md)
 - [Project coding guardrails](AGENTS.md)

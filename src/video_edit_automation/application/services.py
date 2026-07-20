@@ -65,6 +65,14 @@ class ProjectService:
     def import_asset(self, project_id: UUID, requested_path: str | Path) -> MediaAsset:
         self.get(project_id)
         source_path = self.path_policy.resolve_media_file(requested_path)
+        return self._import_resolved_asset(project_id, source_path)
+
+    def import_managed_asset(self, project_id: UUID, requested_path: Path) -> MediaAsset:
+        self.get(project_id)
+        source_path = self.workspace.resolve_managed_import(project_id, requested_path)
+        return self._import_resolved_asset(project_id, source_path)
+
+    def _import_resolved_asset(self, project_id: UUID, source_path: Path) -> MediaAsset:
         stat = source_path.stat()
         fingerprint_source = f"{source_path}\0{stat.st_size}\0{stat.st_mtime_ns}".encode()
         fingerprint = hashlib.sha256(fingerprint_source).hexdigest()

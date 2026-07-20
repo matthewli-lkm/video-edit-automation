@@ -56,20 +56,25 @@ MOBA highlight plan without platform-specific backend code.
 - capture sessions and signals persist in SQLite;
 - a saved bookmark creates an evidence-linked highlight plan.
 
-## Gaming milestone G1b — live capture adapters
+## Gaming milestone G1b — cross-device OBS discovery (implemented)
 
-**Outcome:** OBS companion integration first, then optional native helpers, record or discover a
-full session with separately addressable game/microphone audio and submit the shared manifest.
+**Outcome:** a Windows companion discovers stable OBS recordings and writes verified READY packages;
+the Mac automatically ingests them from mounted SMB/local folders into managed local storage.
 
-**Acceptance criteria:**
+**Implemented checks:**
 
-- capture permissions and failures are visible to the user;
-- adapters populate the existing monotonic clock, process/window evidence, and track contracts;
-- game and microphone are separate whenever the OS/source supports it;
-- low-confidence recognition requires a user override;
-- manual bookmarks are timestamped against the same clock;
-- unsupported games still work through a user-selected generic genre profile;
-- Windows and macOS adapters remain alternatives, not separate editing backends.
+- recordings must remain unchanged for a configurable settle period;
+- `READY` is written only after recording and manifest creation;
+- the Mac rejects traversal, symlinks, size mismatches, and checksum failures;
+- verified files are atomically promoted from `.partial` into project `imports/`;
+- deterministic session IDs make repeated scans idempotent;
+- missing SMB mounts are reported and retried without crashing the API;
+- automatic monitoring is optional and localhost API status/manual scan endpoints remain available.
+
+## Gaming milestone G1c — event and native capture adapters
+
+**Outcome:** collect synchronized League events on Windows, add a foreground-process observer, and
+only then consider optional ScreenCaptureKit or Windows-native recording helpers.
 
 ## Gaming milestone G2 — automatic signal adapters
 

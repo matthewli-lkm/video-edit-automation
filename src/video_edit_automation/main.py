@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -53,8 +54,19 @@ def create_app(
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.container = build_container(settings, repository, media, planner)
-        yield
+        container = build_container(settings, repository, media, planner)
+        app.state.container = container
+        monitor_task: asyncio.Task[None] | None = None
+        inbox_status = container.capture_inbox.status()
+        if inbox_status.automatic_scan_enabled:
+            monitor_task = asyncio.create_task(container.capture_inbox.monitor())
+        try:
+            yield
+        finally:
+            if monitor_task is not None:
+                monitor_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await monitor_task
 
     app = FastAPI(
         title="Video Edit Automation",

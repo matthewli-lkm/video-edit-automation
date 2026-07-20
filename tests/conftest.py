@@ -66,11 +66,20 @@ def media_root(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def settings(tmp_path: Path, media_root: Path) -> Settings:
+def capture_inbox_root(tmp_path: Path) -> Path:
+    root = tmp_path / "capture-inbox"
+    root.mkdir()
+    return root
+
+
+@pytest.fixture
+def settings(tmp_path: Path, media_root: Path, capture_inbox_root: Path) -> Settings:
     return Settings(
         _env_file=None,
         data_dir=tmp_path / "data",
         allowed_media_roots=[media_root],
+        capture_inbox_roots=[capture_inbox_root],
+        capture_inbox_auto_scan=False,
         llm_model="",
     )
 

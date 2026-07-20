@@ -98,6 +98,7 @@ Target duration mismatches are warnings because the user may intentionally accep
 └── projects/
     └── <project-id>/
         ├── analysis/
+        ├── imports/
         ├── proxies/
         ├── renders/
         │   ├── previews/
@@ -105,8 +106,9 @@ Target duration mismatches are warnings because the user may intentionally accep
         └── logs/
 ```
 
-Source footage stays where the user put it. A later "managed import" mode may copy or hard-link it,
-but must remain explicit because video files are large.
+Manual source footage stays where the user put it. READY capture-inbox packages use managed import:
+the recording is copied into `imports/`, verified against manifest size and SHA-256, then registered.
+This keeps rendering off an unreliable SMB connection without deleting or overwriting the source.
 
 ## Pipeline states
 

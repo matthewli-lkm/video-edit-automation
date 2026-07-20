@@ -12,6 +12,7 @@ from video_edit_automation.application.services import (
     RenderService,
 )
 from video_edit_automation.config import Settings
+from video_edit_automation.infrastructure.capture_inbox import CaptureInboxScanner
 from video_edit_automation.infrastructure.ffmpeg_gateway import FFmpegGateway
 from video_edit_automation.infrastructure.game_catalog import RegistryGameDetector
 from video_edit_automation.infrastructure.game_profiles import BUILTIN_GAME_PROFILES
@@ -30,6 +31,7 @@ class Container:
     plans: PlanService
     gaming: GamingHighlightService
     captures: CaptureSessionService
+    capture_inbox: CaptureInboxScanner
     renders: RenderService
 
 
@@ -66,6 +68,12 @@ def build_container(
     plans = PlanService(repository, validator, planner)
     projects = ProjectService(repository, media, path_policy, workspace)
     detector = RegistryGameDetector()
+    captures = CaptureSessionService(
+        repository,
+        projects,
+        detector,
+        set(BUILTIN_GAME_PROFILES),
+    )
     return Container(
         settings=settings,
         repository=repository,
@@ -74,11 +82,14 @@ def build_container(
         projects=projects,
         plans=plans,
         gaming=GamingHighlightService(repository, plans, dict(BUILTIN_GAME_PROFILES)),
-        captures=CaptureSessionService(
-            repository,
+        captures=captures,
+        capture_inbox=CaptureInboxScanner(
+            settings.normalized_capture_inbox_roots(),
             projects,
-            detector,
-            set(BUILTIN_GAME_PROFILES),
+            captures,
+            workspace,
+            poll_seconds=settings.capture_inbox_poll_seconds,
+            automatic_scan_enabled=settings.capture_inbox_auto_scan,
         ),
         renders=RenderService(repository, media, validator, workspace),
     )

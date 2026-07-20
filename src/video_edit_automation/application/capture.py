@@ -106,7 +106,26 @@ class CaptureSessionService:
         audio_track_roles: list[AudioTrackRoleAssignment],
         game_id_override: str | None = None,
         game_profile_id: str | None = None,
+        session_id: UUID | None = None,
+        recording_sha256: str | None = None,
     ) -> CaptureSession:
+        capture_session_id = session_id or uuid4()
+        existing = self.repository.get_capture_session(capture_session_id)
+        if existing is not None:
+            if existing.project_id != project_id or existing.asset_id != asset_id:
+                raise InvalidCaptureSessionError(
+                    f"Capture session {capture_session_id} already identifies another recording"
+                )
+            if (
+                recording_sha256 is not None
+                and existing.recording_sha256 is not None
+                and existing.recording_sha256 != recording_sha256
+            ):
+                raise InvalidCaptureSessionError(
+                    f"Capture session {capture_session_id} has a different recording checksum"
+                )
+            return existing
+
         self._validate_recorder_platform(platform, recorder)
         self._asset(project_id, asset_id)
         if audio_track_roles:
@@ -117,6 +136,7 @@ class CaptureSessionService:
             game_profile_id or (detected.game_profile_id if detected else None)
         )
         session = CaptureSession(
+            id=capture_session_id,
             project_id=project_id,
             asset_id=asset_id,
             platform=platform,
@@ -125,10 +145,14 @@ class CaptureSessionService:
             observations=observations,
             detected_game=detected,
             game_profile_id=selected_profile,
+            recording_sha256=recording_sha256,
             audio_track_roles=audio_track_roles,
         )
         self.repository.save_capture_session(session)
         return session
+
+    def find(self, session_id: UUID) -> CaptureSession | None:
+        return self.repository.get_capture_session(session_id)
 
     def get(self, project_id: UUID, session_id: UUID) -> CaptureSession:
         session = self.repository.get_capture_session(session_id)

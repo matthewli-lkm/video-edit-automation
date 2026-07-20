@@ -48,6 +48,7 @@ class WorkspaceManager:
         root = self.projects_dir / str(project_id)
         for relative in (
             "analysis",
+            "imports",
             "proxies",
             "renders/previews",
             "renders/final",
@@ -55,6 +56,29 @@ class WorkspaceManager:
         ):
             (root / relative).mkdir(parents=True, exist_ok=True)
         return root
+
+    def managed_import_path(self, project_id: UUID, session_id: UUID, suffix: str) -> Path:
+        project_root = self.ensure_project(project_id).resolve()
+        imports_root = (project_root / "imports").resolve()
+        normalized_suffix = suffix.lower()
+        if normalized_suffix not in SUPPORTED_MEDIA_SUFFIXES:
+            raise UnsupportedMediaError(f"Unsupported managed import extension: {suffix}")
+        output = (imports_root / f"{session_id}{normalized_suffix}").resolve()
+        if not output.is_relative_to(imports_root):
+            raise RuntimeError("Resolved managed import escaped the project workspace")
+        return output
+
+    def resolve_managed_import(self, project_id: UUID, requested_path: Path) -> Path:
+        imports_root = (self.ensure_project(project_id) / "imports").resolve()
+        try:
+            resolved = requested_path.resolve(strict=True)
+        except (FileNotFoundError, OSError) as exc:
+            raise PathNotAllowedError("The managed media file does not exist") from exc
+        if not resolved.is_file() or not resolved.is_relative_to(imports_root):
+            raise PathNotAllowedError("Managed media must be a file inside the project imports")
+        if resolved.suffix.lower() not in SUPPORTED_MEDIA_SUFFIXES:
+            raise UnsupportedMediaError("Managed media has an unsupported extension")
+        return resolved
 
     def render_output(self, project_id: UUID, job_id: UUID, profile: str) -> Path:
         project_root = self.ensure_project(project_id)

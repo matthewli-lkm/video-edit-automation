@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     port: int = Field(default=8765, ge=1, le=65535)
     data_dir: Path = Field(default_factory=_default_data_dir)
     allowed_media_roots: list[Path] = Field(default_factory=_default_media_roots)
+    capture_inbox_roots: list[Path] = Field(default_factory=list)
+    capture_inbox_poll_seconds: float = Field(default=15, ge=1, le=3_600)
+    capture_inbox_auto_scan: bool = True
 
     ffmpeg_binary: str = "ffmpeg"
     ffprobe_binary: str = "ffprobe"
@@ -54,3 +57,6 @@ class Settings(BaseSettings):
 
     def normalized_media_roots(self) -> tuple[Path, ...]:
         return tuple(path.expanduser().resolve() for path in self.allowed_media_roots)
+
+    def normalized_capture_inbox_roots(self) -> tuple[Path, ...]:
+        return tuple(path.expanduser().resolve() for path in self.capture_inbox_roots)

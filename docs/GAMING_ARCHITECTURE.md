@@ -170,16 +170,19 @@ own role instead of assuming it is part of game audio.
 6. Create a plan through the session's `/highlight-plans` endpoint.
 7. Review the evidence-linked plan and render with `source_mix` or `game_only` audio.
 
-The backend now persists capture sessions and manual signals. It does not yet watch a live game,
-control OBS, record the screen, read League telemetry, or run OCR/audio/motion detectors. Those are
-adapters to add without changing the session, plan, or renderer contracts.
+The backend now persists capture sessions and manual signals. A Windows companion and Mac inbox can
+automatically transfer and register completed OBS recordings. It does not control OBS, record the
+screen, read League telemetry, or run OCR/audio/motion detectors. Those remain adapters that do not
+change the session, plan, or renderer contracts.
 
 ## Delivery order
 
 1. **Implemented:** shared session manifest, League registry detection, audio-role ingestion, and
    clock-synchronized manual bookmarks.
-2. Add an OBS companion/watch-folder adapter that registers finished recordings automatically.
-3. Add a Windows foreground-process observer; keep OBS as the recorder initially.
+2. **Implemented:** Windows stable-file companion, READY/checksum package protocol, automatic Mac
+   inbox polling, managed local copy, and idempotent ingestion.
+3. Add a Windows foreground-process observer and League Live Client Data event collector; keep OBS
+   as the recorder initially.
 4. Add an optional Swift ScreenCaptureKit helper and, only if needed, a native Windows recorder.
 5. Implement a League Live Client Data signal adapter and one specific FPS adapter.
 6. Add generic audio, microphone-reaction, motion, scene, and OCR analysers.

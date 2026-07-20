@@ -21,6 +21,8 @@ from video_edit_automation.api.schemas import (
     RenderRequest,
 )
 from video_edit_automation.domain.capture import (
+    CaptureInboxScanReport,
+    CaptureInboxStatus,
     CaptureSession,
     GameCatalogEntry,
     ManualBookmarkInput,
@@ -53,6 +55,16 @@ def health(request: Request) -> HealthResponse:
         media_tools="ready" if media_ok else "unavailable",
         local_planner="configured" if container.settings.llm_enabled else "disabled",
     )
+
+
+@router.get("/api/v1/capture-inbox/status", response_model=CaptureInboxStatus)
+def capture_inbox_status(request: Request) -> CaptureInboxStatus:
+    return _container(request).capture_inbox.status()
+
+
+@router.post("/api/v1/capture-inbox/scan", response_model=CaptureInboxScanReport)
+def scan_capture_inbox(request: Request) -> CaptureInboxScanReport:
+    return _container(request).capture_inbox.scan()
 
 
 @router.post(
