@@ -39,6 +39,7 @@ BUILTIN_GAME_PROFILES: dict[str, GameProfile] = {
         signal_weights={
             "manual_marker": 2.5,
             "game_event:multi_kill": 1.9,
+            "game_event:kill_streak": 1.4,
             "game_event:victory": 1.5,
             "game_event:team_fight": 1.25,
             "game_event:objective": 1.1,

@@ -22,6 +22,8 @@ This initial scaffold provides:
 - capture-neutral session manifests for OBS, ScreenCaptureKit, Windows Graphics Capture, and
   externally recorded files;
 - deterministic League of Legends recognition from supplied process/window observations;
+- automatic League VOD candidate discovery from audio peaks and focused local HUD OCR;
+- persisted, typed gaming-analysis JSON plus one-call evidence-linked highlight-plan creation;
 - clock-synchronized manual bookmarks that can directly create a MOBA highlight plan;
 - a Windows OBS companion plus Mac SMB/local inbox monitor with READY, checksum, idempotency, and
   reconnect-safe ingestion;
@@ -30,8 +32,8 @@ This initial scaffold provides:
 - dry-run FFmpeg command generation and background preview/final rendering;
 - unit and media integration tests.
 
-Live OS capture, automatic game-event detectors, transcription, captions, and a timeline UI are
-later vertical slices. See the [cross-device OBS guide](docs/CROSS_DEVICE_OBS.md),
+Live OS capture, League telemetry, automatic FPS detectors, transcription, captions, and a timeline
+UI are later vertical slices. See the [cross-device OBS guide](docs/CROSS_DEVICE_OBS.md),
 [vibe-coding plan](docs/VIBE_CODING_PLAN.md), and
 [gaming architecture](docs/GAMING_ARCHITECTURE.md).
 
@@ -54,12 +56,13 @@ The LLM never writes shell commands, arbitrary FFmpeg filters, or source-file pa
 
 ## Quick start
 
-Prerequisites: Python 3.12+, [`uv`](https://docs.astral.sh/uv/), and FFmpeg/ffprobe.
+Prerequisites: Python 3.12+, [`uv`](https://docs.astral.sh/uv/), FFmpeg/ffprobe, and Tesseract for
+automatic League analysis.
 
 On a future Mac:
 
 ```bash
-brew install ffmpeg uv
+brew install ffmpeg tesseract uv
 cp .env.example .env
 uv sync --extra dev
 uv run uvicorn video_edit_automation.main:app --reload --host 127.0.0.1 --port 8765
@@ -83,15 +86,17 @@ uv run pytest
 5. render a low-resolution preview.
 6. Accept or revise the plan, then request the final render.
 
-For gameplay, import a full-session recording, assign separate game/microphone track roles, select
-the generic FPS or MOBA profile, and submit normalized event/audio/motion/manual signals to create an
-evidence-linked highlight plan. Automatic event detection and native recording adapters are
-intentionally not part of the backend foundation yet.
+For gameplay, import a full-session recording and assign separate game/microphone track roles. You
+can submit normalized signals directly for any profile, or call the League auto-highlight endpoint
+to shortlist frames from audio, read visible HUD announcements locally, persist the evidence, and
+create a validated MOBA plan in one operation. See the gaming architecture for the request shape and
+known OCR limits.
 
 On Windows, the companion can now discover stable OBS recordings, package them into a shared Ready
 folder, and let the Mac inbox automatically verify, copy, probe, and register the League session.
-Game audio and microphone should remain on separate tracks. Automatic League event detection and
-automatic plan/render triggering are still later milestones.
+Game audio and microphone should remain on separate tracks. League OCR analysis is now available
+after ingestion; automatically triggering analysis and rendering for every READY package remains a
+later milestone.
 
 Manual imports reference source media in place. Capture-inbox imports are copied and checksum
 verified into the Mac's project workspace before editing. Source files are never overwritten.

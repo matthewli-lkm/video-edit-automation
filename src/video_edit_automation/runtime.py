@@ -2,9 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from video_edit_automation.application.automatic_gaming import AutomaticGamingHighlightService
 from video_edit_automation.application.capture import CaptureSessionService
 from video_edit_automation.application.gaming import GamingHighlightService
-from video_edit_automation.application.ports import EditPlanner, MediaGateway, Repository
+from video_edit_automation.application.ports import (
+    EditPlanner,
+    HighlightSignalAnalyzer,
+    MediaGateway,
+    Repository,
+)
 from video_edit_automation.application.services import (
     PlanService,
     PlanValidator,
@@ -16,6 +22,7 @@ from video_edit_automation.infrastructure.capture_inbox import CaptureInboxScann
 from video_edit_automation.infrastructure.ffmpeg_gateway import FFmpegGateway
 from video_edit_automation.infrastructure.game_catalog import RegistryGameDetector
 from video_edit_automation.infrastructure.game_profiles import BUILTIN_GAME_PROFILES
+from video_edit_automation.infrastructure.league_ocr_analyzer import LeagueOcrSignalAnalyzer
 from video_edit_automation.infrastructure.openai_compatible_planner import OpenAICompatiblePlanner
 from video_edit_automation.infrastructure.paths import ImportPathPolicy, WorkspaceManager
 from video_edit_automation.infrastructure.sqlite_repository import SQLiteRepository
@@ -30,6 +37,8 @@ class Container:
     projects: ProjectService
     plans: PlanService
     gaming: GamingHighlightService
+    signal_analyzer: HighlightSignalAnalyzer
+    automatic_gaming: AutomaticGamingHighlightService
     captures: CaptureSessionService
     capture_inbox: CaptureInboxScanner
     renders: RenderService
@@ -40,6 +49,7 @@ def build_container(
     repository: Repository | None = None,
     media: MediaGateway | None = None,
     planner: EditPlanner | None = None,
+    signal_analyzer: HighlightSignalAnalyzer | None = None,
 ) -> Container:
     settings = settings or Settings()
     repository = repository or SQLiteRepository(settings.database_path)
@@ -68,6 +78,16 @@ def build_container(
     plans = PlanService(repository, validator, planner)
     projects = ProjectService(repository, media, path_policy, workspace)
     detector = RegistryGameDetector()
+    gaming = GamingHighlightService(repository, plans, dict(BUILTIN_GAME_PROFILES))
+    signal_analyzer = signal_analyzer or LeagueOcrSignalAnalyzer(
+        ffmpeg_binary=settings.ffmpeg_binary,
+        tesseract_binary=settings.tesseract_binary,
+        audio_peak_limit=settings.gaming_analysis_audio_peak_limit,
+        candidate_radius_seconds=settings.gaming_analysis_candidate_radius_seconds,
+        ocr_workers=settings.gaming_analysis_ocr_workers,
+        tail_seconds=settings.gaming_analysis_tail_seconds,
+        tail_interval_seconds=settings.gaming_analysis_tail_interval_seconds,
+    )
     captures = CaptureSessionService(
         repository,
         projects,
@@ -81,7 +101,15 @@ def build_container(
         workspace=workspace,
         projects=projects,
         plans=plans,
-        gaming=GamingHighlightService(repository, plans, dict(BUILTIN_GAME_PROFILES)),
+        gaming=gaming,
+        signal_analyzer=signal_analyzer,
+        automatic_gaming=AutomaticGamingHighlightService(
+            repository,
+            detector,
+            signal_analyzer,
+            gaming,
+            workspace,
+        ),
         captures=captures,
         capture_inbox=CaptureInboxScanner(
             settings.normalized_capture_inbox_roots(),

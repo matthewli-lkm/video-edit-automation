@@ -7,6 +7,8 @@ from fastapi import APIRouter, BackgroundTasks, Request, status
 from video_edit_automation.api.schemas import (
     AssetImportRequest,
     AudioTrackRolesRequest,
+    AutomaticGamingHighlightPlanRequest,
+    AutomaticGamingHighlightPlanResponse,
     CaptureSessionCreateRequest,
     CaptureSessionHighlightPlanRequest,
     GameDetectionRequest,
@@ -54,6 +56,7 @@ def health(request: Request) -> HealthResponse:
         database="ready" if database_ok else "unavailable",
         media_tools="ready" if media_ok else "unavailable",
         local_planner="configured" if container.settings.llm_enabled else "disabled",
+        gaming_analyzer="ready" if container.signal_analyzer.available() else "unavailable",
     )
 
 
@@ -237,6 +240,34 @@ def create_gaming_highlight_plan(
         plan=plan,
         validation=report,
         selected_candidates=selected,
+    )
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/assets/{asset_id}/gaming/auto-highlight-plans",
+    response_model=AutomaticGamingHighlightPlanResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_automatic_gaming_highlight_plan(
+    project_id: UUID,
+    asset_id: UUID,
+    payload: AutomaticGamingHighlightPlanRequest,
+    request: Request,
+) -> AutomaticGamingHighlightPlanResponse:
+    result = _container(request).automatic_gaming.analyze_and_create_plan(
+        project_id=project_id,
+        asset_id=asset_id,
+        brief=payload.brief,
+        game_id=payload.game_id,
+        game_profile_id=payload.game_profile_id,
+        max_highlights=payload.max_highlights,
+    )
+    return AutomaticGamingHighlightPlanResponse(
+        analysis=result.analysis,
+        analysis_path=result.analysis_path,
+        plan=result.plan,
+        validation=result.validation,
+        selected_candidates=result.selected_candidates,
     )
 
 

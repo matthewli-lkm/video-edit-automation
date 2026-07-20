@@ -87,3 +87,10 @@ class WorkspaceManager:
         if not output.is_relative_to(project_root.resolve()):
             raise RuntimeError("Resolved render output escaped the project workspace")
         return output
+
+    def gaming_analysis_output(self, project_id: UUID, asset_id: UUID) -> Path:
+        project_root = self.ensure_project(project_id).resolve()
+        output = (project_root / "analysis" / f"{asset_id}-gaming-signals.json").resolve()
+        if not output.is_relative_to(project_root):
+            raise RuntimeError("Resolved analysis output escaped the project workspace")
+        return output

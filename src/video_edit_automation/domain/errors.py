@@ -32,3 +32,7 @@ class PlannerUnavailableError(DomainError):
 
 class PlannerResponseError(DomainError):
     pass
+
+
+class AnalyzerUnavailableError(DomainError):
+    pass

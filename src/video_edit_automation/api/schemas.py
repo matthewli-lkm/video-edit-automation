@@ -10,7 +10,11 @@ from video_edit_automation.domain.capture import (
     CapturePlatform,
     CaptureRecorder,
 )
-from video_edit_automation.domain.gaming import HighlightCandidate, HighlightSignal
+from video_edit_automation.domain.gaming import (
+    HighlightAnalysis,
+    HighlightCandidate,
+    HighlightSignal,
+)
 from video_edit_automation.domain.models import (
     AudioTrackRoleAssignment,
     EditBrief,
@@ -84,6 +88,18 @@ class GamingHighlightPlanResponse(PlanWithValidation):
     selected_candidates: list[HighlightCandidate]
 
 
+class AutomaticGamingHighlightPlanRequest(ApiModel):
+    brief: EditBrief
+    game_id: str = "league_of_legends"
+    game_profile_id: str | None = None
+    max_highlights: int = Field(default=20, ge=1, le=100)
+
+
+class AutomaticGamingHighlightPlanResponse(GamingHighlightPlanResponse):
+    analysis: HighlightAnalysis
+    analysis_path: Path
+
+
 class RenderRequest(ApiModel):
     preset: RenderPreset
 
@@ -99,3 +115,4 @@ class HealthResponse(ApiModel):
     database: str
     media_tools: str
     local_planner: str
+    gaming_analyzer: str

@@ -88,8 +88,11 @@ or matching window-title fragment and selects `generic_moba`. Process evidence h
 than title-only evidence, and an explicit user override is stored as such. Unknown observations
 return no detection instead of being silently classified.
 
-For later automatic League events, Riot's local Live Client Data API is a promising adapter input.
-It is not called by the current backend and no network service is required for current tests.
+The first automatic League adapter is now implemented without a network service. It uses FFmpeg to
+rank loud audio windows, always samples the final match minutes, crops the standard top-centre event
+banner, and uses local Tesseract OCR. Recognized announcements become evidence-carrying kill, death,
+team-fight, objective, structure, streak, multikill, and result signals. Riot's local Live Client
+Data API remains a promising future source for more precise player-perspective attribution.
 
 Do not let recognition silently guess at low confidence. The UI should show the detected game and
 let the user override it before analysis.
@@ -176,13 +179,45 @@ own role instead of assuming it is part of game audio.
    observations, clock origin, and audio roles.
 4. Verify the result or use `POST /api/v1/gaming/detect-game` before registration.
 5. Add timestamp- or monotonic-clock bookmarks through the session's `/bookmarks` endpoint.
-6. Create a plan through the session's `/highlight-plans` endpoint.
+6. Create a plan through the session's `/highlight-plans` endpoint, or automatically analyze an
+   imported League asset:
+
+```http
+POST /api/v1/projects/{project_id}/assets/{asset_id}/gaming/auto-highlight-plans
+```
+
+```json
+{
+  "brief": {
+    "objective": "Build a multi-play League highlight reel",
+    "target_duration_seconds": 180
+  },
+  "game_id": "league_of_legends",
+  "max_highlights": 6
+}
+```
+
+   The response includes the detected signals, selected candidates, validated plan, and path to the
+   persisted analysis JSON.
 7. Review the evidence-linked plan and render with `source_mix` or `game_only` audio.
 
 The backend now persists capture sessions and manual signals. A Windows companion and Mac inbox can
-automatically transfer and register completed OBS recordings. It does not control OBS, record the
-screen, read League telemetry, or run OCR/audio/motion detectors. Those remain adapters that do not
-change the session, plan, or renderer contracts.
+automatically transfer and register completed OBS recordings. The League OCR/audio analyzer is
+invoked explicitly after import; package arrival does not yet auto-trigger analysis or rendering.
+The backend still does not control OBS, record the screen, read League telemetry, or run generic
+motion/scene detectors.
+
+### League OCR baseline limits
+
+- Tesseract and FFmpeg must be installed on the analysis machine; no cloud or local LLM is required.
+- The crop targets the standard English League event banner. UI scaling, localization, HUD changes,
+  or custom overlays can lower recall.
+- Spectator/global VODs are supported because announcements remain visible, but a detected `death`
+  means that the kill banner named a victim. It does not prove that the recorded player died.
+- Audio peaks are only a candidate shortcut. Quiet events outside the dense endgame sample can be
+  missed, so manual bookmarks and direct signal submission remain supported.
+- OCR text, source, confidence, and signal IDs are retained so a reviewer can audit every selected
+  segment. The scorer never treats OCR as ground truth without confidence weighting.
 
 ## Delivery order
 
@@ -190,14 +225,16 @@ change the session, plan, or renderer contracts.
    clock-synchronized manual bookmarks.
 2. **Implemented:** Windows stable-file companion, READY/checksum package protocol, automatic Mac
    inbox polling, managed local copy, and idempotent ingestion.
-3. Add a Windows foreground-process observer and League Live Client Data event collector; keep OBS
+3. **Implemented:** local League OCR/audio analysis, persisted evidence, and one-call automatic plan
+   creation.
+4. Add a Windows foreground-process observer and League Live Client Data event collector; keep OBS
    as the recorder initially.
-4. Add an optional Swift ScreenCaptureKit helper and, only if needed, a native Windows recorder.
-5. Implement a League Live Client Data signal adapter and one specific FPS adapter.
-6. Add generic audio, microphone-reaction, motion, scene, and OCR analysers.
-7. Create a labelled evaluation set and tune profiles using precision, recall, false highlights,
+5. Add an optional Swift ScreenCaptureKit helper and, only if needed, a native Windows recorder.
+6. Implement a League Live Client Data signal adapter and one specific FPS adapter.
+7. Add generic microphone-reaction, motion, and scene analysers.
+8. Create a labelled evaluation set and tune profiles using precision, recall, false highlights,
    missed highlights, and correction time.
-8. Add a review UI that exposes evidence, score, and game/profile overrides.
+9. Add a review UI that exposes evidence, score, and game/profile overrides.
 
 ## Reference behavior
 

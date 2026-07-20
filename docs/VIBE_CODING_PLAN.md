@@ -88,6 +88,18 @@ only then consider optional ScreenCaptureKit or Windows-native recording helpers
 - analysis can use the microphone even when export is game-only;
 - a labelled test set measures missed and false highlights per game and profile.
 
+### G2a — League OCR/audio baseline (implemented)
+
+The first MOBA vertical slice now shortlists likely moments from FFmpeg audio peaks, adds dense
+endgame coverage, reads standard English League announcements with local Tesseract, and normalizes
+kills, deaths, team fights, objectives, structures, streaks, multikills, and match results. It saves
+typed analysis JSON and creates a validated plan through one API request. Unit tests use no live
+model or network, and the supplied 696-second spectator VOD passed analysis and rendering smoke
+tests.
+
+This is not completion of all G2 acceptance criteria. A specific FPS adapter, microphone-reaction,
+motion and scene detectors, a labelled evaluation set, and player-perspective attribution remain.
+
 ## Milestone 1 — deterministic silence editor
 
 **Outcome:** analyse a single talking-head video for silence and create a plan that removes silence

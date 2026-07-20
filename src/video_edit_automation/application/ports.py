@@ -9,7 +9,11 @@ from video_edit_automation.domain.capture import (
     CaptureSession,
     GameCatalogEntry,
 )
-from video_edit_automation.domain.gaming import DetectedGame, GameContext, HighlightSignal
+from video_edit_automation.domain.gaming import (
+    DetectedGame,
+    GameContext,
+    HighlightAnalysis,
+)
 from video_edit_automation.domain.models import (
     EditBrief,
     EditPlan,
@@ -104,4 +108,9 @@ class GameDetector(Protocol):
 class HighlightSignalAnalyzer(Protocol):
     """Produces evidence; it does not decide or render timeline cuts."""
 
-    def analyze(self, asset: MediaAsset, game: GameContext) -> list[HighlightSignal]: ...
+    @property
+    def name(self) -> str: ...
+
+    def available(self) -> bool: ...
+
+    def analyze(self, asset: MediaAsset, game: GameContext) -> HighlightAnalysis: ...

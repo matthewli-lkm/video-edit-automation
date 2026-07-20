@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from video_edit_automation.domain.models import AudioOutputMode, CaptureMode
+from video_edit_automation.domain.models import AudioOutputMode, CaptureMode, utc_now
 
 NonBlankText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 SignalMetadataValue = str | int | float | bool
@@ -83,6 +84,17 @@ class HighlightSignal(GamingModel):
             else None
         )
         return tuple(key for key in (exact, self.signal_type.value) if key)
+
+
+class HighlightAnalysis(GamingModel):
+    analyzer: NonBlankText
+    asset_id: UUID
+    source_fingerprint: NonBlankText
+    game: GameContext
+    sampled_frame_count: int = Field(ge=0)
+    audio_peak_count: int = Field(ge=0)
+    signals: list[HighlightSignal] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=utc_now)
 
 
 class GameProfile(GamingModel):

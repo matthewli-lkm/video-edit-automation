@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     ffprobe_binary: str = "ffprobe"
     video_codec: str = "libx264"
 
+    tesseract_binary: str = "tesseract"
+    gaming_analysis_audio_peak_limit: int = Field(default=18, ge=1, le=200)
+    gaming_analysis_candidate_radius_seconds: int = Field(default=4, ge=0, le=20)
+    gaming_analysis_ocr_workers: int = Field(default=4, ge=1, le=16)
+    gaming_analysis_tail_seconds: int = Field(default=60, ge=0, le=600)
+    gaming_analysis_tail_interval_seconds: int = Field(default=2, ge=1, le=30)
+
     llm_base_url: str = "http://127.0.0.1:1234/v1"
     llm_model: str = ""
     llm_api_key: str = "local"

@@ -153,6 +153,12 @@ Gaming highlight scoring does not require an LLM. Typed game, telemetry, OCR, au
 microphone-reaction, scene-change, and manual signals feed a deterministic scorer. A model may later
 rerank validated candidates or explain a plan, but it must not invent unsupported event evidence.
 
+The first automatic gaming adapter, `league-ocr-audio-v1`, performs an FFmpeg audio scan, samples a
+bounded set of candidate HUD frames, and runs local Tesseract OCR. Its typed `HighlightAnalysis` is
+atomically saved under the project's `analysis/` directory before its signals reach the common
+scorer. The analyzer never chooses paths, cuts, or FFmpeg syntax, and it can later be replaced by a
+local vision model behind the same `HighlightSignalAnalyzer` port.
+
 ## Scaling later
 
 Keep a narrow model-provider interface. On one Mac, all adapters use localhost. If heavier models
