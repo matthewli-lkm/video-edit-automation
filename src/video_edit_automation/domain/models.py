@@ -195,7 +195,7 @@ class PlanValidationReport(StrictModel):
 class RenderPreset(StrictModel):
     profile: RenderProfile = RenderProfile.PREVIEW
     aspect_ratio: AspectRatio = AspectRatio.SOURCE
-    frames_per_second: int = Field(default=30, ge=1, le=120)
+    frames_per_second: int = Field(default=60, ge=1, le=120)
     audio_output_mode: AudioOutputMode = AudioOutputMode.SOURCE_MIX
 
 

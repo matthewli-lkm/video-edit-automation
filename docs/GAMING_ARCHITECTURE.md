@@ -152,6 +152,10 @@ Then request a game-only render with:
 }
 ```
 
+The render preset defaults to 60 fps. When any selected source segment is below 59 fps, the
+renderer automatically falls back to 30 fps instead of manufacturing apparent smoothness by
+duplicating frames. An explicitly selected non-60 frame rate remains unchanged.
+
 The renderer refuses `game_only` unless an individually addressable track has the `game` role. If
 game and microphone were recorded into one mixed track, clean microphone removal is not reliable;
 the tool must explain this rather than pretending it can isolate the game sound.

@@ -71,6 +71,30 @@ def test_command_uses_argument_list_and_typed_filter(tmp_path: Path) -> None:
     assert "scale=720:1280" in command[command.index("-filter_complex") + 1]
 
 
+def test_default_render_uses_60_fps_for_60_fps_source(tmp_path: Path) -> None:
+    project_id = uuid4()
+    asset = _asset(project_id, tmp_path / "60-fps.mp4").model_copy(update={"frame_rate": 59.94})
+    command = FFmpegGateway().build_render_command(
+        _plan(project_id, asset),
+        {asset.id: asset},
+        tmp_path / "output.mp4",
+        RenderPreset(),
+    )
+    assert "fps=60" in command[command.index("-filter_complex") + 1]
+
+
+def test_default_render_falls_back_to_30_fps_for_slower_source(tmp_path: Path) -> None:
+    project_id = uuid4()
+    asset = _asset(project_id, tmp_path / "30-fps.mp4")
+    command = FFmpegGateway().build_render_command(
+        _plan(project_id, asset),
+        {asset.id: asset},
+        tmp_path / "output.mp4",
+        RenderPreset(),
+    )
+    assert "fps=30" in command[command.index("-filter_complex") + 1]
+
+
 def test_game_only_render_selects_explicit_game_track(tmp_path: Path) -> None:
     project_id = uuid4()
     asset = _asset(project_id, tmp_path / "recording.mkv").model_copy(
@@ -106,8 +130,32 @@ def test_game_only_render_rejects_mixed_audio(tmp_path: Path) -> None:
         )
 
 
+def test_render_rejects_nonempty_but_invalid_output(tmp_path: Path, monkeypatch) -> None:
+    def fake_run(command, **_kwargs):
+        if command[0] == "ffmpeg":
+            Path(command[-1]).write_bytes(b"incomplete mp4")
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return subprocess.CompletedProcess(command, 0, "not-json", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    project_id = uuid4()
+    asset = _asset(project_id, tmp_path / "source.mp4")
+    with pytest.raises(MediaToolError, match="created an invalid output"):
+        FFmpegGateway().render(
+            _plan(project_id, asset),
+            {asset.id: asset},
+            tmp_path / "broken.mp4",
+            RenderPreset(),
+        )
+
+
 @pytest.mark.integration
-def test_real_ffmpeg_probe_and_render(tmp_path: Path) -> None:
+@pytest.mark.parametrize(("source_fps", "expected_fps"), [(30, 30), (60, 60)])
+def test_real_ffmpeg_probe_and_render(
+    tmp_path: Path,
+    source_fps: int,
+    expected_fps: int,
+) -> None:
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
         pytest.skip("FFmpeg tools are not installed")
     source = tmp_path / "source.mp4"
@@ -120,7 +168,7 @@ def test_real_ffmpeg_probe_and_render(tmp_path: Path) -> None:
             "-f",
             "lavfi",
             "-i",
-            "testsrc=size=320x240:rate=30:duration=2",
+            f"testsrc=size=320x240:rate={source_fps}:duration=2",
             "-f",
             "lavfi",
             "-i",
@@ -163,6 +211,7 @@ def test_real_ffmpeg_probe_and_render(tmp_path: Path) -> None:
     rendered = gateway.probe(output)
     assert output.stat().st_size > 0
     assert rendered.duration_seconds == pytest.approx(1.0, abs=0.15)
+    assert rendered.frame_rate == pytest.approx(expected_fps, abs=0.1)
 
 
 @pytest.mark.integration

@@ -49,6 +49,13 @@ def _even(value: float) -> int:
     return rounded if rounded % 2 == 0 else rounded - 1
 
 
+def _target_frame_rate(preset: RenderPreset, assets: list[MediaAsset]) -> int:
+    """Use 60 fps by default only when every source segment can supply it."""
+    if preset.frames_per_second != 60:
+        return preset.frames_per_second
+    return 60 if all(asset.frame_rate >= 59 for asset in assets) else 30
+
+
 def _infer_audio_role(title: str | None) -> AudioTrackRole:
     normalized = (title or "").strip().lower()
     if not normalized:
@@ -220,6 +227,7 @@ class FFmpegGateway:
             raise MediaToolError("Every v1 render segment must have an audio stream")
 
         width, height = self._target_dimensions(preset, ordered_assets[0])
+        frames_per_second = _target_frame_rate(preset, ordered_assets)
         command = [
             self.ffmpeg_binary,
             "-hide_banner",
@@ -240,7 +248,7 @@ class FFmpegGateway:
                 f"[{index}:v:0]trim=start={start}:end={end},setpts=PTS-STARTPTS,"
                 f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
                 f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
-                f"setsar=1,fps={preset.frames_per_second},format=yuv420p[v{index}]"
+                f"setsar=1,fps={frames_per_second},format=yuv420p[v{index}]"
             )
             audio_input = self._audio_input(index, ordered_assets[index], preset.audio_output_mode)
             filters.append(
@@ -319,3 +327,16 @@ class FFmpegGateway:
             raise MediaToolError(f"FFmpeg render failed: {detail}")
         if not output_path.is_file() or output_path.stat().st_size == 0:
             raise MediaToolError("FFmpeg exited successfully but did not create a usable output")
+        try:
+            rendered = self.probe(output_path)
+        except MediaToolError as exc:
+            raise MediaToolError(
+                f"FFmpeg exited successfully but created an invalid output: {exc}"
+            ) from exc
+        expected_duration = plan.duration_seconds
+        duration_tolerance = max(0.5, expected_duration * 0.01)
+        if abs(rendered.duration_seconds - expected_duration) > duration_tolerance:
+            raise MediaToolError(
+                "Rendered duration does not match the validated edit plan: "
+                f"expected {expected_duration:.3f}s, got {rendered.duration_seconds:.3f}s"
+            )
