@@ -163,3 +163,80 @@ def test_real_ffmpeg_probe_and_render(tmp_path: Path) -> None:
     rendered = gateway.probe(output)
     assert output.stat().st_size > 0
     assert rendered.duration_seconds == pytest.approx(1.0, abs=0.15)
+
+
+@pytest.mark.integration
+def test_real_obs_style_multitrack_recording_renders_game_audio_only(tmp_path: Path) -> None:
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        pytest.skip("FFmpeg tools are not installed")
+    source = tmp_path / "obs-recording.mkv"
+    generated = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=320x240:rate=30:duration=2",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=2",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1000:duration=2",
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-map",
+            "2:a:0",
+            "-metadata:s:a:0",
+            "title=Game Audio",
+            "-metadata:s:a:1",
+            "title=Microphone",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(source),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        shell=False,
+    )
+    assert generated.returncode == 0, generated.stderr
+
+    gateway = FFmpegGateway()
+    probed = gateway.probe(source)
+    assert [track.role for track in probed.audio_tracks] == [
+        AudioTrackRole.GAME,
+        AudioTrackRole.MICROPHONE,
+    ]
+    project_id = uuid4()
+    asset = MediaAsset(
+        **probed.model_dump(),
+        project_id=project_id,
+        source_path=source,
+        source_fingerprint="obs-multitrack",
+        size_bytes=source.stat().st_size,
+        modified_at_ns=source.stat().st_mtime_ns,
+    )
+    output = tmp_path / "game-only.mp4"
+    gateway.render(
+        _plan(project_id, asset),
+        {asset.id: asset},
+        output,
+        RenderPreset(audio_output_mode=AudioOutputMode.GAME_ONLY),
+    )
+    rendered = gateway.probe(output)
+    assert output.stat().st_size > 0
+    assert len(rendered.audio_tracks) == 1
+    assert rendered.duration_seconds == pytest.approx(1.0, abs=0.15)

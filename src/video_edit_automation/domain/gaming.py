@@ -55,6 +55,7 @@ class GameContext(GamingModel):
 class DetectedGame(GameContext):
     confidence: float = Field(ge=0, le=1)
     evidence: list[str] = Field(default_factory=list)
+    game_profile_id: str | None = None
 
 
 class HighlightSignal(GamingModel):

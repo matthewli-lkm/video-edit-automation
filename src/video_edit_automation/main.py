@@ -12,6 +12,7 @@ from video_edit_automation.config import Settings
 from video_edit_automation.domain.errors import (
     DomainError,
     EntityNotFoundError,
+    InvalidCaptureSessionError,
     InvalidEditPlanError,
     MediaToolError,
     PathNotAllowedError,
@@ -31,7 +32,15 @@ def _status_for_error(error: DomainError) -> int:
         return 415
     if isinstance(error, PlannerUnavailableError):
         return 503
-    if isinstance(error, (InvalidEditPlanError, MediaToolError, PlannerResponseError)):
+    if isinstance(
+        error,
+        (
+            InvalidCaptureSessionError,
+            InvalidEditPlanError,
+            MediaToolError,
+            PlannerResponseError,
+        ),
+    ):
         return 422
     return 400
 

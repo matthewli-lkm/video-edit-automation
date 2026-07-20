@@ -8,6 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from video_edit_automation.domain.capture import CaptureSession
 from video_edit_automation.domain.models import EditPlan, Job, MediaAsset, Project
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -142,3 +143,22 @@ class SQLiteRepository:
 
     def get_job(self, job_id: UUID) -> Job | None:
         return self._get("job", job_id, Job.model_validate_json)
+
+    def save_capture_session(self, session: CaptureSession) -> None:
+        self._save(
+            "capture_session",
+            session,
+            session.id,
+            session.project_id,
+            session.created_at.isoformat(),
+        )
+
+    def get_capture_session(self, session_id: UUID) -> CaptureSession | None:
+        return self._get("capture_session", session_id, CaptureSession.model_validate_json)
+
+    def list_capture_sessions(self, project_id: UUID) -> list[CaptureSession]:
+        return self._list(
+            "capture_session",
+            CaptureSession.model_validate_json,
+            project_id,
+        )

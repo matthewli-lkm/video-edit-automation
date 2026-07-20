@@ -16,6 +16,7 @@ LLM integration, validation, APIs, and media processing.
 ```mermaid
 flowchart LR
     UI["Future Mac UI"] --> API["Local API"]
+    CAP["OBS or native capture adapter"] --> API
     API --> APP["Use cases"]
     APP --> DB[("SQLite")]
     APP --> MEDIA["FFmpeg / ffprobe"]
@@ -42,6 +43,10 @@ transcript and plan contracts.
 Gaming uses the same dependency rule: game recognition and signal analysers sit behind application
 ports; genre/game weights are data profiles; all selected clips become ordinary validated timeline
 segments. See [Gaming capture and highlight architecture](GAMING_ARCHITECTURE.md).
+
+Capture is an input boundary, not a platform assumption. OBS on Windows/macOS, a future
+Windows.Graphics.Capture helper, and a future ScreenCaptureKit helper all register the same typed
+capture-session manifest after the media file is safely imported.
 
 ## Core contracts
 

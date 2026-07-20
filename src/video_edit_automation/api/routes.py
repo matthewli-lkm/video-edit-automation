@@ -7,6 +7,9 @@ from fastapi import APIRouter, BackgroundTasks, Request, status
 from video_edit_automation.api.schemas import (
     AssetImportRequest,
     AudioTrackRolesRequest,
+    CaptureSessionCreateRequest,
+    CaptureSessionHighlightPlanRequest,
+    GameDetectionRequest,
     GamingHighlightPlanRequest,
     GamingHighlightPlanResponse,
     HealthResponse,
@@ -17,7 +20,12 @@ from video_edit_automation.api.schemas import (
     RenderCommandResponse,
     RenderRequest,
 )
-from video_edit_automation.domain.gaming import GameProfile
+from video_edit_automation.domain.capture import (
+    CaptureSession,
+    GameCatalogEntry,
+    ManualBookmarkInput,
+)
+from video_edit_automation.domain.gaming import DetectedGame, GameProfile, HighlightSignal
 from video_edit_automation.domain.models import (
     EditPlan,
     Job,
@@ -100,6 +108,100 @@ def assign_audio_track_roles(
 @router.get("/api/v1/gaming/profiles", response_model=list[GameProfile])
 def list_gaming_profiles(request: Request) -> list[GameProfile]:
     return _container(request).gaming.list_profiles()
+
+
+@router.get("/api/v1/gaming/games", response_model=list[GameCatalogEntry])
+def list_supported_games(request: Request) -> list[GameCatalogEntry]:
+    return _container(request).captures.list_games()
+
+
+@router.post("/api/v1/gaming/detect-game", response_model=DetectedGame | None)
+def detect_game(payload: GameDetectionRequest, request: Request) -> DetectedGame | None:
+    return _container(request).captures.detect_game(payload.observation)
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/capture-sessions",
+    response_model=CaptureSession,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_capture_session(
+    project_id: UUID,
+    payload: CaptureSessionCreateRequest,
+    request: Request,
+) -> CaptureSession:
+    return _container(request).captures.create(
+        project_id=project_id,
+        asset_id=payload.asset_id,
+        platform=payload.platform,
+        recorder=payload.recorder,
+        clock_origin_monotonic_ns=payload.clock_origin_monotonic_ns,
+        observations=payload.observations,
+        audio_track_roles=payload.audio_track_roles,
+        game_id_override=payload.game_id_override,
+        game_profile_id=payload.game_profile_id,
+    )
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/capture-sessions",
+    response_model=list[CaptureSession],
+)
+def list_capture_sessions(project_id: UUID, request: Request) -> list[CaptureSession]:
+    return _container(request).captures.list(project_id)
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/capture-sessions/{session_id}",
+    response_model=CaptureSession,
+)
+def get_capture_session(
+    project_id: UUID,
+    session_id: UUID,
+    request: Request,
+) -> CaptureSession:
+    return _container(request).captures.get(project_id, session_id)
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/capture-sessions/{session_id}/bookmarks",
+    response_model=HighlightSignal,
+    status_code=status.HTTP_201_CREATED,
+)
+def add_capture_bookmark(
+    project_id: UUID,
+    session_id: UUID,
+    payload: ManualBookmarkInput,
+    request: Request,
+) -> HighlightSignal:
+    return _container(request).captures.add_bookmark(project_id, session_id, payload)
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/capture-sessions/{session_id}/highlight-plans",
+    response_model=GamingHighlightPlanResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_capture_highlight_plan(
+    project_id: UUID,
+    session_id: UUID,
+    payload: CaptureSessionHighlightPlanRequest,
+    request: Request,
+) -> GamingHighlightPlanResponse:
+    container = _container(request)
+    profile_id, signals = container.captures.highlight_inputs(project_id, session_id)
+    plan, report, selected = container.gaming.create_plan(
+        project_id,
+        payload.brief,
+        profile_id,
+        signals,
+        payload.max_highlights,
+    )
+    return GamingHighlightPlanResponse(
+        plan=plan,
+        validation=report,
+        selected_candidates=selected,
+    )
 
 
 @router.post(

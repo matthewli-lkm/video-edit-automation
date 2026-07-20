@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from video_edit_automation.domain.capture import (
+    CaptureObservation,
+    CapturePlatform,
+    CaptureRecorder,
+)
 from video_edit_automation.domain.gaming import HighlightCandidate, HighlightSignal
 from video_edit_automation.domain.models import (
     AudioTrackRoleAssignment,
@@ -30,6 +36,26 @@ class AssetImportRequest(ApiModel):
 
 class AudioTrackRolesRequest(ApiModel):
     assignments: list[AudioTrackRoleAssignment] = Field(min_length=1)
+
+
+class GameDetectionRequest(ApiModel):
+    observation: CaptureObservation
+
+
+class CaptureSessionCreateRequest(ApiModel):
+    asset_id: UUID
+    platform: CapturePlatform
+    recorder: CaptureRecorder
+    clock_origin_monotonic_ns: int | None = Field(default=None, ge=0)
+    observations: list[CaptureObservation] = Field(default_factory=list)
+    audio_track_roles: list[AudioTrackRoleAssignment] = Field(default_factory=list)
+    game_id_override: str | None = None
+    game_profile_id: str | None = None
+
+
+class CaptureSessionHighlightPlanRequest(ApiModel):
+    brief: EditBrief
+    max_highlights: int = Field(default=20, ge=1, le=100)
 
 
 class PlanCreateRequest(ApiModel):

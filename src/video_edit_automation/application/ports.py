@@ -4,6 +4,11 @@ from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
+from video_edit_automation.domain.capture import (
+    CaptureObservation,
+    CaptureSession,
+    GameCatalogEntry,
+)
 from video_edit_automation.domain.gaming import DetectedGame, GameContext, HighlightSignal
 from video_edit_automation.domain.models import (
     EditBrief,
@@ -45,6 +50,12 @@ class Repository(Protocol):
 
     def get_job(self, job_id: UUID) -> Job | None: ...
 
+    def save_capture_session(self, session: CaptureSession) -> None: ...
+
+    def get_capture_session(self, session_id: UUID) -> CaptureSession | None: ...
+
+    def list_capture_sessions(self, project_id: UUID) -> list[CaptureSession]: ...
+
 
 class MediaGateway(Protocol):
     def available(self) -> bool: ...
@@ -83,7 +94,11 @@ class EditPlanner(Protocol):
 class GameDetector(Protocol):
     """Identifies a game without coupling the editor to one operating system."""
 
-    def detect(self, process_name: str, window_title: str | None = None) -> DetectedGame | None: ...
+    def list_games(self) -> list[GameCatalogEntry]: ...
+
+    def get_game(self, game_id: str) -> GameCatalogEntry | None: ...
+
+    def detect(self, observation: CaptureObservation) -> DetectedGame | None: ...
 
 
 class HighlightSignalAnalyzer(Protocol):

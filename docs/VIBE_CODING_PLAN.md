@@ -40,19 +40,36 @@ recording contains a separately identified game track.
 
 See [the gaming architecture](GAMING_ARCHITECTURE.md) for the capture and detector roadmap.
 
-## Gaming milestone G1 — Mac capture and game recognition
+## Gaming milestone G1a — capture-neutral sessions (implemented)
 
-**Outcome:** a small Swift ScreenCaptureKit helper records a full session with separately
-addressable game and microphone audio and reports the foreground game to the Python backend.
+**Outcome:** register an OBS/native/external recording using one manifest, recognize League from
+supplied process/window evidence, apply audio roles, synchronize manual bookmarks, and generate a
+MOBA highlight plan without platform-specific backend code.
+
+**Implemented checks:**
+
+- OBS is supported as a recorder identity on Windows or macOS;
+- platform-specific native recorder identities are rejected on the wrong OS;
+- unknown games remain unknown and can be explicitly overridden;
+- League observations choose `generic_moba` with recorded confidence/evidence;
+- bookmarks accept media time or the session's monotonic clock;
+- capture sessions and signals persist in SQLite;
+- a saved bookmark creates an evidence-linked highlight plan.
+
+## Gaming milestone G1b — live capture adapters
+
+**Outcome:** OBS companion integration first, then optional native helpers, record or discover a
+full session with separately addressable game/microphone audio and submit the shared manifest.
 
 **Acceptance criteria:**
 
 - capture permissions and failures are visible to the user;
-- a session manifest records monotonic clock origin, bundle/process/window evidence, and tracks;
+- adapters populate the existing monotonic clock, process/window evidence, and track contracts;
 - game and microphone are separate whenever the OS/source supports it;
 - low-confidence recognition requires a user override;
 - manual bookmarks are timestamped against the same clock;
-- unsupported games still work with a generic genre profile.
+- unsupported games still work through a user-selected generic genre profile;
+- Windows and macOS adapters remain alternatives, not separate editing backends.
 
 ## Gaming milestone G2 — automatic signal adapters
 
@@ -166,7 +183,7 @@ through configuration. Do not merge a general benchmark platform into the editor
 | Week | Deliverable | Proof |
 |---|---|---|
 | 1 | Foundation + gaming contracts | real import, legal preview, scored FPS/MOBA plan |
-| 2 | Silence editor or Mac capture G1 | synthetic pauses or separate-track session |
+| 2 | Silence editor or live capture G1b | synthetic pauses or separate-track session |
 | 3 | Offline transcription or signals G2 | cached transcript or automatic evidence |
 | 4 | LLM plan + fallback | golden plan metrics and manual preview |
 | 5 | Captions + 9:16 | readable mobile preview |

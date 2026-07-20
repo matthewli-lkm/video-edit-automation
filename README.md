@@ -19,12 +19,16 @@ This initial scaffold provides:
 - an optional OpenAI-compatible local planner for LM Studio or Ollama;
 - independent editing profiles and FPS/MOBA game profiles;
 - typed highlight signals with deterministic weighting, buffering, merging, and evidence links;
+- capture-neutral session manifests for OBS, ScreenCaptureKit, Windows Graphics Capture, and
+  externally recorded files;
+- deterministic League of Legends recognition from supplied process/window observations;
+- clock-synchronized manual bookmarks that can directly create a MOBA highlight plan;
 - audio-track roles plus safe game-only rendering when game and microphone tracks are separate;
 - dry-run FFmpeg command generation and background preview/final rendering;
 - unit and media integration tests.
 
-Live Mac capture, game/event detectors, transcription, captions, and a timeline UI are later vertical
-slices. See [the vibe-coding plan](docs/VIBE_CODING_PLAN.md) and
+Live OS capture, automatic game-event detectors, transcription, captions, and a timeline UI are
+later vertical slices. See [the vibe-coding plan](docs/VIBE_CODING_PLAN.md) and
 [gaming architecture](docs/GAMING_ARCHITECTURE.md).
 
 ## Why this shape
@@ -77,8 +81,13 @@ uv run pytest
 
 For gameplay, import a full-session recording, assign separate game/microphone track roles, select
 the generic FPS or MOBA profile, and submit normalized event/audio/motion/manual signals to create an
-evidence-linked highlight plan. Signal detection and macOS recording adapters are intentionally not
-part of the backend foundation yet.
+evidence-linked highlight plan. Automatic event detection and native recording adapters are
+intentionally not part of the backend foundation yet.
+
+On Windows, the first practical capture path is an OBS `.mkv` recording with game audio and
+microphone on separate tracks. Register the imported asset as a capture session, include a League
+process/window observation or explicit game override, add bookmarks, and create a highlight plan
+from that session. The same manifest supports OBS on macOS and future native capture helpers.
 
 The API currently references source media rather than copying gigabytes into the project directory. Generated files always go under the tool's own data directory, and source files are never overwritten.
 

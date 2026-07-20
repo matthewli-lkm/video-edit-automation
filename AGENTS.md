@@ -28,6 +28,9 @@ non-linear editor.
 13. Never claim game-only audio is possible from a mixed game/microphone track. Require a separately
     identified game track or fail visibly.
 14. Every automatically selected gaming segment must retain the signal IDs that justify it.
+15. Treat OBS, ScreenCaptureKit, Windows Graphics Capture, and external files as adapters to one
+    capture-session contract; never fork editing behavior by operating system.
+16. A registered capture session does not imply that this backend performed or controlled capture.
 
 ## Definition of done
 

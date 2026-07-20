@@ -18,6 +18,10 @@ class InvalidEditPlanError(DomainError):
     pass
 
 
+class InvalidCaptureSessionError(DomainError):
+    pass
+
+
 class MediaToolError(DomainError):
     pass
 
