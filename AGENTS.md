@@ -5,9 +5,9 @@ Read `README.md`, `docs/ARCHITECTURE.md`, and the current milestone in
 
 ## Product boundary
 
-This is a local-first, single-user video automation backend. The first supported workflow is
-talking-head, lecture, interview, and short-form editing. Do not broaden a milestone into a
-general non-linear editor.
+This is a local-first, single-user video automation backend. Supported foundations cover spoken
+content and evidence-driven gaming highlights. Do not broaden a milestone into a general
+non-linear editor.
 
 ## Invariants
 
@@ -21,6 +21,13 @@ general non-linear editor.
 8. Keep API, application, domain, and infrastructure dependencies pointing inward.
 9. Prefer a small vertical slice with tests over a wide unfinished subsystem.
 10. Do not add a message broker, vector database, or cloud dependency until a measured need exists.
+11. Keep capture/OS APIs behind adapters; Python application code consumes typed session and signal
+    contracts.
+12. Keep editing intent, game genre, and specific-game adapters separate; do not fork the backend by
+    content category.
+13. Never claim game-only audio is possible from a mixed game/microphone track. Require a separately
+    identified game track or fail visibly.
+14. Every automatically selected gaming segment must retain the signal IDs that justify it.
 
 ## Definition of done
 
@@ -40,4 +47,3 @@ Keep one milestone or one behavior per pull request. Before writing code, state:
 - the domain contract affected;
 - the files expected to change;
 - the tests that will prove it works.
-

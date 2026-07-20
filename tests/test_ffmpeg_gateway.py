@@ -7,8 +7,12 @@ from uuid import uuid4
 
 import pytest
 
+from video_edit_automation.domain.errors import MediaToolError
 from video_edit_automation.domain.models import (
     AspectRatio,
+    AudioOutputMode,
+    AudioTrack,
+    AudioTrackRole,
     EditBrief,
     EditPlan,
     MediaAsset,
@@ -67,6 +71,41 @@ def test_command_uses_argument_list_and_typed_filter(tmp_path: Path) -> None:
     assert "scale=720:1280" in command[command.index("-filter_complex") + 1]
 
 
+def test_game_only_render_selects_explicit_game_track(tmp_path: Path) -> None:
+    project_id = uuid4()
+    asset = _asset(project_id, tmp_path / "recording.mkv").model_copy(
+        update={
+            "audio_tracks": [
+                AudioTrack(stream_index=1, role=AudioTrackRole.MICROPHONE),
+                AudioTrack(stream_index=2, role=AudioTrackRole.GAME),
+            ]
+        }
+    )
+    command = FFmpegGateway().build_render_command(
+        _plan(project_id, asset),
+        {asset.id: asset},
+        tmp_path / "game-only.mp4",
+        RenderPreset(audio_output_mode=AudioOutputMode.GAME_ONLY),
+    )
+    filter_graph = command[command.index("-filter_complex") + 1]
+    assert "[0:2]atrim" in filter_graph
+    assert "[0:1]atrim" not in filter_graph
+
+
+def test_game_only_render_rejects_mixed_audio(tmp_path: Path) -> None:
+    project_id = uuid4()
+    asset = _asset(project_id, tmp_path / "mixed.mp4").model_copy(
+        update={"audio_tracks": [AudioTrack(stream_index=1, role=AudioTrackRole.MIXED)]}
+    )
+    with pytest.raises(MediaToolError, match="cannot have microphone audio removed reliably"):
+        FFmpegGateway().build_render_command(
+            _plan(project_id, asset),
+            {asset.id: asset},
+            tmp_path / "invalid.mp4",
+            RenderPreset(audio_output_mode=AudioOutputMode.GAME_ONLY),
+        )
+
+
 @pytest.mark.integration
 def test_real_ffmpeg_probe_and_render(tmp_path: Path) -> None:
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
@@ -104,6 +143,7 @@ def test_real_ffmpeg_probe_and_render(tmp_path: Path) -> None:
 
     gateway = FFmpegGateway()
     probed = gateway.probe(source)
+    assert probed.audio_tracks[0].role == AudioTrackRole.MIXED
     project_id = uuid4()
     asset = MediaAsset(
         **probed.model_dump(),

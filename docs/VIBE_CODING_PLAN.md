@@ -23,6 +23,49 @@ plans, dry-run or execute an FFmpeg render, and optionally call a local structur
 **Exit check:** tests and lint pass; source footage cannot be overwritten; invalid times never reach
 FFmpeg.
 
+## Gaming foundation — implemented
+
+**Outcome:** represent FPS and MOBA policies without forking the backend, normalize heterogeneous
+highlight evidence, build deterministic evidence-linked plans, and export game-only audio when the
+recording contains a separately identified game track.
+
+**Implemented checks:**
+
+- editing intent and game genre are separate profiles;
+- built-in generic FPS/MOBA weights, buffers, thresholds, and capture/audio policies are typed;
+- nearby signals merge into one candidate and retain evidence IDs;
+- unknown assets and out-of-bounds signals fail before plan creation;
+- game-only rendering selects only an explicit game track;
+- mixed audio fails visibly instead of promising unreliable microphone removal.
+
+See [the gaming architecture](GAMING_ARCHITECTURE.md) for the capture and detector roadmap.
+
+## Gaming milestone G1 — Mac capture and game recognition
+
+**Outcome:** a small Swift ScreenCaptureKit helper records a full session with separately
+addressable game and microphone audio and reports the foreground game to the Python backend.
+
+**Acceptance criteria:**
+
+- capture permissions and failures are visible to the user;
+- a session manifest records monotonic clock origin, bundle/process/window evidence, and tracks;
+- game and microphone are separate whenever the OS/source supports it;
+- low-confidence recognition requires a user override;
+- manual bookmarks are timestamped against the same clock;
+- unsupported games still work with a generic genre profile.
+
+## Gaming milestone G2 — automatic signal adapters
+
+**Outcome:** produce normalized signals automatically, starting with one supported FPS and one MOBA.
+
+**Acceptance criteria:**
+
+- telemetry/log/replay integrations stay behind per-game adapters;
+- generic audio, microphone-reaction, motion, scene, and OCR detectors work without a game adapter;
+- every signal records source and confidence;
+- analysis can use the microphone even when export is game-only;
+- a labelled test set measures missed and false highlights per game and profile.
+
 ## Milestone 1 — deterministic silence editor
 
 **Outcome:** analyse a single talking-head video for silence and create a plan that removes silence
@@ -122,15 +165,14 @@ through configuration. Do not merge a general benchmark platform into the editor
 
 | Week | Deliverable | Proof |
 |---|---|---|
-| 1 | Foundation + one real import/render | 10-second source becomes a legal preview |
-| 2 | Silence removal | synthetic pauses removed within tolerance |
-| 3 | Offline transcription | cached Cantonese/English transcript |
+| 1 | Foundation + gaming contracts | real import, legal preview, scored FPS/MOBA plan |
+| 2 | Silence editor or Mac capture G1 | synthetic pauses or separate-track session |
+| 3 | Offline transcription or signals G2 | cached transcript or automatic evidence |
 | 4 | LLM plan + fallback | golden plan metrics and manual preview |
 | 5 | Captions + 9:16 | readable mobile preview |
 | 6 | Review UI | revise, approve, export end to end |
-| 7 | Evaluation harness | compare two local models/prompts |
+| 7 | Evaluation harness | compare planners and gaming profiles |
 | 8 | Packaging and demo | one-command Mac setup and portfolio video |
 
 Treat the schedule as eight focused iterations, not a promise that every advanced editor feature will
 exist after eight weeks.
-

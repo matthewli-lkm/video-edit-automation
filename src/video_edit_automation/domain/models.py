@@ -32,6 +32,35 @@ class RenderProfile(StrEnum):
     FINAL = "final"
 
 
+class EditingProfile(StrEnum):
+    SPOKEN_CONTENT = "spoken_content"
+    GAMING_COMMENTARY = "gaming_commentary"
+    GAMEPLAY_HIGHLIGHTS = "gameplay_highlights"
+    GAMING_MONTAGE = "gaming_montage"
+    SHORT_FORM_GAMING = "short_form_gaming"
+
+
+class CaptureMode(StrEnum):
+    HIGHLIGHTS = "highlights"
+    FULL_MATCH = "full_match"
+    FULL_SESSION = "full_session"
+    MANUAL = "manual"
+
+
+class AudioTrackRole(StrEnum):
+    MIXED = "mixed"
+    GAME = "game"
+    MICROPHONE = "microphone"
+    VOICE_CHAT = "voice_chat"
+    MUSIC = "music"
+    UNKNOWN = "unknown"
+
+
+class AudioOutputMode(StrEnum):
+    SOURCE_MIX = "source_mix"
+    GAME_ONLY = "game_only"
+
+
 class JobStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
@@ -45,6 +74,20 @@ class Project(StrictModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class AudioTrack(StrictModel):
+    stream_index: int = Field(ge=0)
+    role: AudioTrackRole = AudioTrackRole.UNKNOWN
+    codec: str | None = None
+    channels: int | None = Field(default=None, gt=0)
+    title: str | None = None
+    language: str | None = None
+
+
+class AudioTrackRoleAssignment(StrictModel):
+    stream_index: int = Field(ge=0)
+    role: AudioTrackRole
+
+
 class ProbedMedia(StrictModel):
     duration_seconds: float = Field(gt=0)
     width: int = Field(gt=0)
@@ -54,6 +97,7 @@ class ProbedMedia(StrictModel):
     has_audio: bool
     video_codec: str | None = None
     audio_codec: str | None = None
+    audio_tracks: list[AudioTrack] = Field(default_factory=list)
 
 
 class MediaAsset(ProbedMedia):
@@ -83,6 +127,7 @@ class TranscriptSegment(StrictModel):
 
 class EditBrief(StrictModel):
     objective: NonBlankText
+    editing_profile: EditingProfile = EditingProfile.SPOKEN_CONTENT
     audience: str | None = None
     target_duration_seconds: float | None = Field(default=None, gt=0, le=86_400)
     aspect_ratio: AspectRatio = AspectRatio.SOURCE
@@ -97,6 +142,7 @@ class TimelineSegment(StrictModel):
     source_out_seconds: float = Field(gt=0)
     purpose: str | None = None
     transcript_segment_ids: list[str] = Field(default_factory=list)
+    highlight_signal_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def out_is_after_in(self) -> TimelineSegment:
@@ -150,6 +196,7 @@ class RenderPreset(StrictModel):
     profile: RenderProfile = RenderProfile.PREVIEW
     aspect_ratio: AspectRatio = AspectRatio.SOURCE
     frames_per_second: int = Field(default=30, ge=1, le=120)
+    audio_output_mode: AudioOutputMode = AudioOutputMode.SOURCE_MIX
 
 
 class Job(StrictModel):

@@ -1,6 +1,10 @@
 from video_edit_automation.domain.models import (
     AspectRatio,
+    AudioOutputMode,
+    AudioTrack,
+    AudioTrackRole,
     EditBrief,
+    EditingProfile,
     EditPlan,
     EditPlanDraft,
     Job,
@@ -14,9 +18,13 @@ from video_edit_automation.domain.models import (
 
 __all__ = [
     "AspectRatio",
+    "AudioOutputMode",
+    "AudioTrack",
+    "AudioTrackRole",
     "EditBrief",
     "EditPlan",
     "EditPlanDraft",
+    "EditingProfile",
     "Job",
     "JobStatus",
     "MediaAsset",

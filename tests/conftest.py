@@ -8,6 +8,8 @@ from fastapi.testclient import TestClient
 
 from video_edit_automation.config import Settings
 from video_edit_automation.domain.models import (
+    AudioTrack,
+    AudioTrackRole,
     EditPlan,
     MediaAsset,
     ProbedMedia,
@@ -29,6 +31,10 @@ class FakeMediaGateway:
             has_audio=True,
             video_codec="h264",
             audio_codec="aac",
+            audio_tracks=[
+                AudioTrack(stream_index=1, role=AudioTrackRole.UNKNOWN, title="Track 1"),
+                AudioTrack(stream_index=2, role=AudioTrackRole.UNKNOWN, title="Track 2"),
+            ],
         )
 
     def build_render_command(

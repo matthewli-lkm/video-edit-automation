@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
+from video_edit_automation.domain.gaming import HighlightCandidate, HighlightSignal
 from video_edit_automation.domain.models import (
+    AudioTrackRoleAssignment,
     EditBrief,
     EditPlan,
     EditPlanDraft,
@@ -26,6 +28,10 @@ class AssetImportRequest(ApiModel):
     local_path: Path
 
 
+class AudioTrackRolesRequest(ApiModel):
+    assignments: list[AudioTrackRoleAssignment] = Field(min_length=1)
+
+
 class PlanCreateRequest(ApiModel):
     brief: EditBrief
     draft: EditPlanDraft
@@ -39,6 +45,17 @@ class PlanGenerateRequest(ApiModel):
 class PlanWithValidation(ApiModel):
     plan: EditPlan
     validation: PlanValidationReport
+
+
+class GamingHighlightPlanRequest(ApiModel):
+    brief: EditBrief
+    game_profile_id: str
+    signals: list[HighlightSignal] = Field(min_length=1)
+    max_highlights: int = Field(default=20, ge=1, le=100)
+
+
+class GamingHighlightPlanResponse(PlanWithValidation):
+    selected_candidates: list[HighlightCandidate]
 
 
 class RenderRequest(ApiModel):

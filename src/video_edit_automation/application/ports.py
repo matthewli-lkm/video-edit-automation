@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
+from video_edit_automation.domain.gaming import DetectedGame, GameContext, HighlightSignal
 from video_edit_automation.domain.models import (
     EditBrief,
     EditPlan,
@@ -77,3 +78,15 @@ class EditPlanner(Protocol):
         assets: list[MediaAsset],
         transcript: list[TranscriptSegment],
     ) -> EditPlanDraft: ...
+
+
+class GameDetector(Protocol):
+    """Identifies a game without coupling the editor to one operating system."""
+
+    def detect(self, process_name: str, window_title: str | None = None) -> DetectedGame | None: ...
+
+
+class HighlightSignalAnalyzer(Protocol):
+    """Produces evidence; it does not decide or render timeline cuts."""
+
+    def analyze(self, asset: MediaAsset, game: GameContext) -> list[HighlightSignal]: ...

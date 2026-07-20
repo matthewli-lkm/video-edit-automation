@@ -6,6 +6,9 @@ from fastapi import APIRouter, BackgroundTasks, Request, status
 
 from video_edit_automation.api.schemas import (
     AssetImportRequest,
+    AudioTrackRolesRequest,
+    GamingHighlightPlanRequest,
+    GamingHighlightPlanResponse,
     HealthResponse,
     PlanCreateRequest,
     PlanGenerateRequest,
@@ -14,6 +17,7 @@ from video_edit_automation.api.schemas import (
     RenderCommandResponse,
     RenderRequest,
 )
+from video_edit_automation.domain.gaming import GameProfile
 from video_edit_automation.domain.models import (
     EditPlan,
     Job,
@@ -74,6 +78,52 @@ def import_asset(project_id: UUID, payload: AssetImportRequest, request: Request
 @router.get("/api/v1/projects/{project_id}/assets", response_model=list[MediaAsset])
 def list_assets(project_id: UUID, request: Request) -> list[MediaAsset]:
     return _container(request).projects.list_assets(project_id)
+
+
+@router.put(
+    "/api/v1/projects/{project_id}/assets/{asset_id}/audio-tracks",
+    response_model=MediaAsset,
+)
+def assign_audio_track_roles(
+    project_id: UUID,
+    asset_id: UUID,
+    payload: AudioTrackRolesRequest,
+    request: Request,
+) -> MediaAsset:
+    return _container(request).projects.assign_audio_track_roles(
+        project_id,
+        asset_id,
+        payload.assignments,
+    )
+
+
+@router.get("/api/v1/gaming/profiles", response_model=list[GameProfile])
+def list_gaming_profiles(request: Request) -> list[GameProfile]:
+    return _container(request).gaming.list_profiles()
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/gaming/highlight-plans",
+    response_model=GamingHighlightPlanResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_gaming_highlight_plan(
+    project_id: UUID,
+    payload: GamingHighlightPlanRequest,
+    request: Request,
+) -> GamingHighlightPlanResponse:
+    plan, report, selected = _container(request).gaming.create_plan(
+        project_id,
+        payload.brief,
+        payload.game_profile_id,
+        payload.signals,
+        payload.max_highlights,
+    )
+    return GamingHighlightPlanResponse(
+        plan=plan,
+        validation=report,
+        selected_candidates=selected,
+    )
 
 
 @router.post(

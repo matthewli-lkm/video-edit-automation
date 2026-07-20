@@ -11,6 +11,9 @@ from uuid import UUID
 from video_edit_automation.domain.errors import MediaToolError
 from video_edit_automation.domain.models import (
     AspectRatio,
+    AudioOutputMode,
+    AudioTrack,
+    AudioTrackRole,
     EditPlan,
     MediaAsset,
     ProbedMedia,
@@ -44,6 +47,23 @@ def _frame_rate(stream: dict[str, Any]) -> float:
 def _even(value: float) -> int:
     rounded = max(2, int(round(value)))
     return rounded if rounded % 2 == 0 else rounded - 1
+
+
+def _infer_audio_role(title: str | None) -> AudioTrackRole:
+    normalized = (title or "").strip().lower()
+    if not normalized:
+        return AudioTrackRole.UNKNOWN
+    if "microphone" in normalized or normalized in {"mic", "microphone audio"}:
+        return AudioTrackRole.MICROPHONE
+    if "voice chat" in normalized or "discord" in normalized or normalized == "chat":
+        return AudioTrackRole.VOICE_CHAT
+    if "game" in normalized or "desktop" in normalized or "system" in normalized:
+        return AudioTrackRole.GAME
+    if "music" in normalized:
+        return AudioTrackRole.MUSIC
+    if "mix" in normalized or "master" in normalized:
+        return AudioTrackRole.MIXED
+    return AudioTrackRole.UNKNOWN
 
 
 class FFmpegGateway:
@@ -92,7 +112,8 @@ class FFmpegGateway:
 
         streams = payload.get("streams", [])
         video = next((item for item in streams if item.get("codec_type") == "video"), None)
-        audio = next((item for item in streams if item.get("codec_type") == "audio"), None)
+        audio_streams = [item for item in streams if item.get("codec_type") == "audio"]
+        audio = audio_streams[0] if audio_streams else None
         if video is None:
             raise MediaToolError("The selected file has no video stream")
 
@@ -100,6 +121,23 @@ class FFmpegGateway:
         duration = duration or _safe_float(video.get("duration"))
         if duration is None:
             raise MediaToolError("ffprobe did not report a valid media duration")
+
+        audio_tracks = []
+        for stream in audio_streams:
+            tags = stream.get("tags") or {}
+            title = tags.get("title") or tags.get("handler_name")
+            audio_tracks.append(
+                AudioTrack(
+                    stream_index=int(stream["index"]),
+                    role=_infer_audio_role(title),
+                    codec=stream.get("codec_name"),
+                    channels=stream.get("channels"),
+                    title=title,
+                    language=tags.get("language"),
+                )
+            )
+        if len(audio_tracks) == 1 and audio_tracks[0].role == AudioTrackRole.UNKNOWN:
+            audio_tracks[0] = audio_tracks[0].model_copy(update={"role": AudioTrackRole.MIXED})
 
         return ProbedMedia(
             duration_seconds=duration,
@@ -110,7 +148,42 @@ class FFmpegGateway:
             has_audio=audio is not None,
             video_codec=video.get("codec_name"),
             audio_codec=audio.get("codec_name") if audio else None,
+            audio_tracks=audio_tracks,
         )
+
+    @staticmethod
+    def _audio_input(
+        input_index: int,
+        asset: MediaAsset,
+        mode: AudioOutputMode,
+    ) -> str:
+        if mode == AudioOutputMode.SOURCE_MIX:
+            if not asset.audio_tracks:
+                return f"[{input_index}:a:0]"
+            track = next(
+                (
+                    candidate
+                    for candidate in asset.audio_tracks
+                    if candidate.role == AudioTrackRole.MIXED
+                ),
+                asset.audio_tracks[0],
+            )
+            return f"[{input_index}:{track.stream_index}]"
+
+        game_track = next(
+            (
+                candidate
+                for candidate in asset.audio_tracks
+                if candidate.role == AudioTrackRole.GAME
+            ),
+            None,
+        )
+        if game_track is None:
+            raise MediaToolError(
+                "Game-only export requires a separate audio track assigned the 'game' role. "
+                "A mixed track cannot have microphone audio removed reliably after recording."
+            )
+        return f"[{input_index}:{game_track.stream_index}]"
 
     def _target_dimensions(
         self,
@@ -169,8 +242,9 @@ class FFmpegGateway:
                 f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
                 f"setsar=1,fps={preset.frames_per_second},format=yuv420p[v{index}]"
             )
+            audio_input = self._audio_input(index, ordered_assets[index], preset.audio_output_mode)
             filters.append(
-                f"[{index}:a:0]atrim=start={start}:end={end},"
+                f"{audio_input}atrim=start={start}:end={end},"
                 f"asetpts=PTS-STARTPTS,aresample=48000[a{index}]"
             )
             concat_inputs.extend([f"[v{index}]", f"[a{index}]"])

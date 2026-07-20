@@ -8,9 +8,11 @@ from video_edit_automation.application.ports import EditPlanner, MediaGateway, R
 from video_edit_automation.domain.errors import (
     EntityNotFoundError,
     InvalidEditPlanError,
+    MediaToolError,
     PlannerUnavailableError,
 )
 from video_edit_automation.domain.models import (
+    AudioTrackRoleAssignment,
     EditBrief,
     EditPlan,
     EditPlanDraft,
@@ -88,6 +90,45 @@ class ProjectService:
         )
         self.repository.save_asset(asset)
         return asset
+
+    def assign_audio_track_roles(
+        self,
+        project_id: UUID,
+        asset_id: UUID,
+        assignments: list[AudioTrackRoleAssignment],
+    ) -> MediaAsset:
+        self.get(project_id)
+        asset = self.repository.get_asset(asset_id)
+        if asset is None or asset.project_id != project_id:
+            raise EntityNotFoundError(
+                f"Media asset {asset_id} was not found in project {project_id}"
+            )
+        if not asset.audio_tracks:
+            raise MediaToolError(
+                "This asset has no individually addressable audio tracks; "
+                "re-import it after probing"
+            )
+        assignment_by_index = {item.stream_index: item.role for item in assignments}
+        if len(assignment_by_index) != len(assignments):
+            raise MediaToolError("Each audio stream may be assigned only once per request")
+        known_indexes = {track.stream_index for track in asset.audio_tracks}
+        unknown_indexes = set(assignment_by_index) - known_indexes
+        if unknown_indexes:
+            indexes = ", ".join(str(index) for index in sorted(unknown_indexes))
+            raise MediaToolError(f"Unknown audio stream index(es): {indexes}")
+
+        updated = asset.model_copy(
+            update={
+                "audio_tracks": [
+                    track.model_copy(
+                        update={"role": assignment_by_index.get(track.stream_index, track.role)}
+                    )
+                    for track in asset.audio_tracks
+                ]
+            }
+        )
+        self.repository.save_asset(updated)
+        return updated
 
 
 class PlanValidator:
@@ -238,6 +279,15 @@ class PlanService:
         draft: EditPlanDraft,
     ) -> tuple[EditPlan, PlanValidationReport]:
         return self._save_valid_plan(project_id, brief, draft, "manual")
+
+    def create_derived(
+        self,
+        project_id: UUID,
+        brief: EditBrief,
+        draft: EditPlanDraft,
+        generated_by: str,
+    ) -> tuple[EditPlan, PlanValidationReport]:
+        return self._save_valid_plan(project_id, brief, draft, generated_by)
 
     def generate(
         self,

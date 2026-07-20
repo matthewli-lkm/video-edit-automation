@@ -2,9 +2,10 @@
 
 ## Product decision
 
-The MVP is a **local editing copilot for spoken-content video**. It converts factual analysis
-(duration, transcript, silence, scenes) into a versioned edit-decision plan. A human can preview
-and revise that plan before a deterministic renderer produces the final file.
+The MVP is a **local editing copilot for spoken content and evidence-driven gaming highlights**. It
+converts factual analysis (duration, transcript, silence, scenes, or gaming signals) into a
+versioned edit-decision plan. A human can preview and revise that plan before a deterministic
+renderer produces the final file.
 
 This is a better first project than a broad "AI video editor": it can become useful after a few
 milestones, it is testable without subjective computer vision, and it showcases data engineering,
@@ -38,13 +39,17 @@ Adapters can change without rewriting the plan validator. For example, `whisper.
 replaced by MLX Whisper, or LM Studio by Ollama, while the application still consumes the same
 transcript and plan contracts.
 
+Gaming uses the same dependency rule: game recognition and signal analysers sit behind application
+ports; genre/game weights are data profiles; all selected clips become ordinary validated timeline
+segments. See [Gaming capture and highlight architecture](GAMING_ARCHITECTURE.md).
+
 ## Core contracts
 
 ### Media facts
 
 `MediaAsset` records a stable asset ID, resolved source path, duration, dimensions, frame rate,
-audio presence, file size, and modification time. User prompts and model outputs refer to the ID,
-not to filesystem paths.
+audio presence and stream roles, file size, and modification time. User prompts and model outputs
+refer to the ID, not to filesystem paths.
 
 ### Transcript facts
 
@@ -137,9 +142,12 @@ The local model may not:
 Structured output is still untrusted input. Pydantic parsing is followed by repository-aware plan
 validation.
 
+Gaming highlight scoring does not require an LLM. Typed game, telemetry, OCR, audio, motion,
+microphone-reaction, scene-change, and manual signals feed a deterministic scorer. A model may later
+rerank validated candidates or explain a plan, but it must not invent unsupported event evidence.
+
 ## Scaling later
 
 Keep a narrow model-provider interface. On one Mac, all adapters use localhost. If heavier models
 move to a Linux/NVIDIA server later, only the private API base URL changes. Media rendering should
 stay close to the source footage unless a deliberate transfer/cache layer is added.
-

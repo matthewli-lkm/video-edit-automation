@@ -2,7 +2,10 @@
 
 A local-first backend that turns raw footage plus a plain-language brief into a **reviewable edit plan**, then renders that plan with deterministic media tools.
 
-The first product target is intentionally narrow: talking-head videos, lectures, interviews, and short-form clips. It is not trying to replace Final Cut Pro or DaVinci Resolve. The local LLM decides *what* may be worth keeping; validated code decides *whether the timeline is legal*; FFmpeg performs the actual edit.
+The first product target is intentionally narrow: talking-head content plus evidence-driven gaming
+highlights. It is not trying to replace Final Cut Pro or DaVinci Resolve. A local model or a
+deterministic signal scorer decides *what* may be worth keeping; validated code decides *whether the
+timeline is legal*; FFmpeg performs the actual edit.
 
 ## Current foundation
 
@@ -14,10 +17,15 @@ This initial scaffold provides:
 - `ffprobe` metadata extraction;
 - a typed `EditPlan` contract with time-bound validation;
 - an optional OpenAI-compatible local planner for LM Studio or Ollama;
+- independent editing profiles and FPS/MOBA game profiles;
+- typed highlight signals with deterministic weighting, buffering, merging, and evidence links;
+- audio-track roles plus safe game-only rendering when game and microphone tracks are separate;
 - dry-run FFmpeg command generation and background preview/final rendering;
 - unit and media integration tests.
 
-Transcription, silence/scene analysis, captions, and a timeline UI are the next vertical slices. See [the vibe-coding plan](docs/VIBE_CODING_PLAN.md).
+Live Mac capture, game/event detectors, transcription, captions, and a timeline UI are later vertical
+slices. See [the vibe-coding plan](docs/VIBE_CODING_PLAN.md) and
+[gaming architecture](docs/GAMING_ARCHITECTURE.md).
 
 ## Why this shape
 
@@ -67,6 +75,11 @@ uv run pytest
 5. render a low-resolution preview.
 6. Accept or revise the plan, then request the final render.
 
+For gameplay, import a full-session recording, assign separate game/microphone track roles, select
+the generic FPS or MOBA profile, and submit normalized event/audio/motion/manual signals to create an
+evidence-linked highlight plan. Signal detection and macOS recording adapters are intentionally not
+part of the backend foundation yet.
+
 The API currently references source media rather than copying gigabytes into the project directory. Generated files always go under the tool's own data directory, and source files are never overwritten.
 
 ## Local AI on the Mac
@@ -83,6 +96,7 @@ The media pipeline and LLM can also live on separate machines later: keep this M
 ## Repository guide
 
 - [Architecture and contracts](docs/ARCHITECTURE.md)
+- [Gaming capture, signals, profiles, and audio](docs/GAMING_ARCHITECTURE.md)
 - [Vibe-coding roadmap and prompts](docs/VIBE_CODING_PLAN.md)
 - [Project coding guardrails](AGENTS.md)
 - `src/video_edit_automation/domain/` — stable data contracts and validation results
@@ -98,4 +112,3 @@ The media pipeline and LLM can also live on separate machines later: keep this M
 - multi-user cloud hosting;
 - training a custom video model;
 - deleting or overwriting original footage.
-
