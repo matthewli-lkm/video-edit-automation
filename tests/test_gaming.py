@@ -178,10 +178,7 @@ def test_automatic_league_analysis_persists_evidence_and_creates_plan(
     ).json()
 
     response = client.post(
-        (
-            f"/api/v1/projects/{project['id']}/assets/{asset['id']}"
-            "/gaming/auto-highlight-plans"
-        ),
+        (f"/api/v1/projects/{project['id']}/assets/{asset['id']}/gaming/auto-highlight-plans"),
         json={
             "brief": {
                 "objective": "Find the strongest League plays",
@@ -219,10 +216,7 @@ def test_automatic_league_analysis_reports_missing_local_tools(
     ).json()
 
     response = client.post(
-        (
-            f"/api/v1/projects/{project['id']}/assets/{asset['id']}"
-            "/gaming/auto-highlight-plans"
-        ),
+        (f"/api/v1/projects/{project['id']}/assets/{asset['id']}/gaming/auto-highlight-plans"),
         json={"brief": {"objective": "Find League highlights"}},
     )
 

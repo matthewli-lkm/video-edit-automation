@@ -349,8 +349,7 @@ class LeagueOcrSignalAnalyzer:
         for index, event in enumerate(events):
             metadata = {**event.metadata, "raw_text": event.raw_text}
             identifier = (
-                f"league-ocr-{event.event_name}-"
-                f"{int(event.timestamp_seconds):06d}-{index:03d}"
+                f"league-ocr-{event.event_name}-{int(event.timestamp_seconds):06d}-{index:03d}"
             )
             signals.append(
                 HighlightSignal(
