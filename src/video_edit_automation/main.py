@@ -10,6 +10,7 @@ from video_edit_automation import __version__
 from video_edit_automation.api.routes import router
 from video_edit_automation.application.ports import (
     EditPlanner,
+    HighlightReviewer,
     HighlightSignalAnalyzer,
     MediaGateway,
     Repository,
@@ -19,12 +20,16 @@ from video_edit_automation.domain.errors import (
     AnalyzerUnavailableError,
     DomainError,
     EntityNotFoundError,
+    InvalidAgentWorkflowError,
     InvalidCaptureSessionError,
     InvalidEditPlanError,
+    InvalidHighlightReviewError,
     MediaToolError,
     PathNotAllowedError,
     PlannerResponseError,
     PlannerUnavailableError,
+    ReviewerResponseError,
+    ReviewerUnavailableError,
     UnsupportedMediaError,
 )
 from video_edit_automation.runtime import build_container
@@ -37,15 +42,21 @@ def _status_for_error(error: DomainError) -> int:
         return 403
     if isinstance(error, UnsupportedMediaError):
         return 415
-    if isinstance(error, (AnalyzerUnavailableError, PlannerUnavailableError)):
+    if isinstance(
+        error,
+        (AnalyzerUnavailableError, PlannerUnavailableError, ReviewerUnavailableError),
+    ):
         return 503
     if isinstance(
         error,
         (
             InvalidCaptureSessionError,
             InvalidEditPlanError,
+            InvalidHighlightReviewError,
+            InvalidAgentWorkflowError,
             MediaToolError,
             PlannerResponseError,
+            ReviewerResponseError,
         ),
     ):
         return 422
@@ -58,10 +69,18 @@ def create_app(
     media: MediaGateway | None = None,
     planner: EditPlanner | None = None,
     signal_analyzer: HighlightSignalAnalyzer | None = None,
+    reviewer: HighlightReviewer | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        container = build_container(settings, repository, media, planner, signal_analyzer)
+        container = build_container(
+            settings,
+            repository,
+            media,
+            planner,
+            signal_analyzer,
+            reviewer,
+        )
         app.state.container = container
         monitor_task: asyncio.Task[None] | None = None
         inbox_status = container.capture_inbox.status()

@@ -15,6 +15,8 @@ from video_edit_automation.api.schemas import (
     GamingHighlightPlanRequest,
     GamingHighlightPlanResponse,
     HealthResponse,
+    HighlightAgentWorkflowCreateRequest,
+    HighlightReviewSnapshotResponse,
     PlanCreateRequest,
     PlanGenerateRequest,
     PlanWithValidation,
@@ -22,6 +24,8 @@ from video_edit_automation.api.schemas import (
     RenderCommandResponse,
     RenderRequest,
 )
+from video_edit_automation.application.review import HighlightReviewSnapshot
+from video_edit_automation.domain.agent_workflow import HighlightAgentWorkflow
 from video_edit_automation.domain.capture import (
     CaptureInboxScanReport,
     CaptureInboxStatus,
@@ -37,6 +41,10 @@ from video_edit_automation.domain.models import (
     PlanValidationReport,
     Project,
 )
+from video_edit_automation.domain.review import (
+    HighlightReviewDecisionInput,
+    HighlightReviewSession,
+)
 from video_edit_automation.runtime import Container
 
 router = APIRouter()
@@ -44,6 +52,15 @@ router = APIRouter()
 
 def _container(request: Request) -> Container:
     return request.app.state.container
+
+
+def _review_response(snapshot: HighlightReviewSnapshot) -> HighlightReviewSnapshotResponse:
+    return HighlightReviewSnapshotResponse(
+        session=snapshot.session,
+        decisions=snapshot.decisions,
+        latest_candidate_decisions=snapshot.latest_candidate_decisions,
+        metrics=snapshot.metrics,
+    )
 
 
 @router.get("/healthz", response_model=HealthResponse)
@@ -57,6 +74,11 @@ def health(request: Request) -> HealthResponse:
         media_tools="ready" if media_ok else "unavailable",
         local_planner="configured" if container.settings.llm_enabled else "disabled",
         gaming_analyzer="ready" if container.signal_analyzer.available() else "unavailable",
+        highlight_reviewer=(
+            "ready"
+            if container.reviewer is not None and container.reviewer.available()
+            else "disabled"
+        ),
     )
 
 
@@ -268,7 +290,92 @@ def create_automatic_gaming_highlight_plan(
         plan=result.plan,
         validation=result.validation,
         selected_candidates=result.selected_candidates,
+        review_session=result.review_session,
     )
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/gaming/highlight-reviews",
+    response_model=list[HighlightReviewSession],
+)
+def list_highlight_reviews(
+    project_id: UUID,
+    request: Request,
+) -> list[HighlightReviewSession]:
+    return _container(request).reviews.list_sessions(project_id)
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/gaming/highlight-reviews/{review_id}",
+    response_model=HighlightReviewSnapshotResponse,
+)
+def get_highlight_review(
+    project_id: UUID,
+    review_id: UUID,
+    request: Request,
+) -> HighlightReviewSnapshotResponse:
+    return _review_response(_container(request).reviews.snapshot(project_id, review_id))
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/gaming/highlight-reviews/{review_id}/decisions",
+    response_model=HighlightReviewSnapshotResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def record_highlight_review_decision(
+    project_id: UUID,
+    review_id: UUID,
+    payload: HighlightReviewDecisionInput,
+    request: Request,
+) -> HighlightReviewSnapshotResponse:
+    snapshot = _container(request).reviews.record_decision(project_id, review_id, payload)
+    return _review_response(snapshot)
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/gaming/highlight-reviews/{review_id}/agent-workflows",
+    response_model=HighlightAgentWorkflow,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def start_highlight_agent_workflow(
+    project_id: UUID,
+    review_id: UUID,
+    payload: HighlightAgentWorkflowCreateRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> HighlightAgentWorkflow:
+    container = _container(request)
+    workflow = container.agent_workflows.create(
+        project_id,
+        review_id,
+        payload.render_preset,
+        payload.maximum_review_rounds,
+    )
+    background_tasks.add_task(container.agent_workflows.run, workflow.id)
+    return workflow
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/gaming/agent-workflows",
+    response_model=list[HighlightAgentWorkflow],
+)
+def list_highlight_agent_workflows(
+    project_id: UUID,
+    request: Request,
+) -> list[HighlightAgentWorkflow]:
+    return _container(request).agent_workflows.list(project_id)
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/gaming/agent-workflows/{workflow_id}",
+    response_model=HighlightAgentWorkflow,
+)
+def get_highlight_agent_workflow(
+    project_id: UUID,
+    workflow_id: UUID,
+    request: Request,
+) -> HighlightAgentWorkflow:
+    return _container(request).agent_workflows.get(project_id, workflow_id)
 
 
 @router.post(

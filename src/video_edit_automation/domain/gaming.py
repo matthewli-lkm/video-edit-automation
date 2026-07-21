@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
@@ -87,10 +87,12 @@ class HighlightSignal(GamingModel):
 
 
 class HighlightAnalysis(GamingModel):
+    id: UUID = Field(default_factory=uuid4)
     analyzer: NonBlankText
     asset_id: UUID
     source_fingerprint: NonBlankText
     game: GameContext
+    game_profile_id: NonBlankText | None = None
     sampled_frame_count: int = Field(ge=0)
     audio_peak_count: int = Field(ge=0)
     signals: list[HighlightSignal] = Field(default_factory=list)

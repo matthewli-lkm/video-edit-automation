@@ -11,12 +11,15 @@ from video_edit_automation.application.ports import (
     HighlightSignalAnalyzer,
     Repository,
 )
+from video_edit_automation.application.review import HighlightReviewService
 from video_edit_automation.domain.errors import (
     AnalyzerUnavailableError,
     EntityNotFoundError,
+    MediaToolError,
 )
 from video_edit_automation.domain.gaming import HighlightAnalysis, HighlightCandidate
 from video_edit_automation.domain.models import EditBrief, EditPlan, PlanValidationReport
+from video_edit_automation.domain.review import HighlightReviewSession
 from video_edit_automation.infrastructure.paths import WorkspaceManager
 
 
@@ -27,6 +30,7 @@ class AutomaticGamingHighlightResult:
     plan: EditPlan
     validation: PlanValidationReport
     selected_candidates: list[HighlightCandidate]
+    review_session: HighlightReviewSession
 
 
 class AutomaticGamingHighlightService:
@@ -38,12 +42,14 @@ class AutomaticGamingHighlightService:
         detector: GameDetector,
         analyzer: HighlightSignalAnalyzer,
         gaming: GamingHighlightService,
+        reviews: HighlightReviewService,
         workspace: WorkspaceManager,
     ) -> None:
         self.repository = repository
         self.detector = detector
         self.analyzer = analyzer
         self.gaming = gaming
+        self.reviews = reviews
         self.workspace = workspace
 
     def analyze_and_create_plan(
@@ -70,14 +76,29 @@ class AutomaticGamingHighlightService:
                 f"Gaming analyzer {self.analyzer.name!r} is not available on this machine"
             )
 
-        analysis = self.analyzer.analyze(asset, game)
-        analysis_path = self._persist_analysis(project_id, asset_id, analysis)
+        profile_id = game_profile_id or game.default_profile_id
+        analysis = self.analyzer.analyze(asset, game).model_copy(
+            update={"game_profile_id": profile_id}
+        )
+        if analysis.asset_id != asset.id or analysis.source_fingerprint != asset.source_fingerprint:
+            raise MediaToolError("Gaming analyzer returned evidence for a different media asset")
+        if any(signal.asset_id != asset.id for signal in analysis.signals):
+            raise MediaToolError("Gaming analyzer returned a signal for a different media asset")
+        self.repository.save_highlight_analysis(project_id, analysis)
+        analysis_path = self._persist_analysis(project_id, analysis)
         plan, validation, selected = self.gaming.create_plan(
             project_id=project_id,
             brief=brief,
-            profile_id=game_profile_id or game.default_profile_id,
+            profile_id=profile_id,
             signals=analysis.signals,
             max_highlights=max_highlights,
+        )
+        review_session = self.reviews.create_session(
+            project_id=project_id,
+            asset_id=asset_id,
+            plan=plan,
+            analysis=analysis,
+            candidates=selected,
         )
         return AutomaticGamingHighlightResult(
             analysis=analysis,
@@ -85,15 +106,19 @@ class AutomaticGamingHighlightService:
             plan=plan,
             validation=validation,
             selected_candidates=selected,
+            review_session=review_session,
         )
 
     def _persist_analysis(
         self,
         project_id: UUID,
-        asset_id: UUID,
         analysis: HighlightAnalysis,
     ) -> Path:
-        output = self.workspace.gaming_analysis_output(project_id, asset_id)
+        output = self.workspace.gaming_analysis_output(
+            project_id,
+            analysis.asset_id,
+            analysis.id,
+        )
         partial = output.with_name(f"{output.name}.{uuid4()}.partial")
         try:
             partial.write_text(analysis.model_dump_json(indent=2), encoding="utf-8")

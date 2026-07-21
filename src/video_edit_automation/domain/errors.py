@@ -18,6 +18,14 @@ class InvalidEditPlanError(DomainError):
     pass
 
 
+class InvalidHighlightReviewError(DomainError):
+    pass
+
+
+class InvalidAgentWorkflowError(DomainError):
+    pass
+
+
 class InvalidCaptureSessionError(DomainError):
     pass
 
@@ -31,6 +39,14 @@ class PlannerUnavailableError(DomainError):
 
 
 class PlannerResponseError(DomainError):
+    pass
+
+
+class ReviewerUnavailableError(DomainError):
+    pass
+
+
+class ReviewerResponseError(DomainError):
     pass
 
 

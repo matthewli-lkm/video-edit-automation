@@ -197,9 +197,53 @@ POST /api/v1/projects/{project_id}/assets/{asset_id}/gaming/auto-highlight-plans
 }
 ```
 
-   The response includes the detected signals, selected candidates, validated plan, and path to the
-   persisted analysis JSON.
+   The response includes the detected signals, selected candidates, validated plan, path to the
+   persisted analysis JSON, and a durable `review_session`.
 7. Review the evidence-linked plan and render with `source_mix` or `game_only` audio.
+
+   Record one review decision at a time with:
+
+```http
+POST /api/v1/projects/{project_id}/gaming/highlight-reviews/{review_id}/decisions
+```
+
+```json
+{"action": "adjust", "candidate_id": "candidate-uuid", "start_seconds": 164, "end_seconds": 215}
+```
+
+   A moment the detector missed is labelled independently:
+
+```json
+{
+  "action": "missed_highlight",
+  "start_seconds": 321,
+  "end_seconds": 338,
+  "event_name": "champion_kill",
+  "note": "Visible kill was absent from the proposed reel"
+}
+```
+
+   `GET` the review session to retrieve its evidence, latest candidate decisions, revision history,
+   and metrics. Metrics are provisional until every proposed candidate has been reviewed.
+
+8. With `VEA_REVIEWER_MODEL` configured, start the bounded reviewer workflow:
+
+```http
+POST /api/v1/projects/{project_id}/gaming/highlight-reviews/{review_id}/agent-workflows
+```
+
+```json
+{
+  "maximum_review_rounds": 2,
+  "render_preset": {"profile": "preview", "frames_per_second": 60}
+}
+```
+
+   Poll the returned ID at
+   `GET /api/v1/projects/{project_id}/gaming/agent-workflows/{workflow_id}`. The terminal state is
+   `approved`, `human_review_required`, or `technical_failure`. The model receives structured
+   evidence capped at 50 clips, 200 signals, and 12 sampled preview frames; it never receives
+   authority over rendering, paths, publishing, or cleanup.
 
 The backend now persists capture sessions and manual signals. A Windows companion and Mac inbox can
 automatically transfer and register completed OBS recordings. The League OCR/audio analyzer is
@@ -232,9 +276,12 @@ motion/scene detectors.
 5. Add an optional Swift ScreenCaptureKit helper and, only if needed, a native Windows recorder.
 6. Implement a League Live Client Data signal adapter and one specific FPS adapter.
 7. Add generic microphone-reaction, motion, and scene analysers.
-8. Create a labelled evaluation set and tune profiles using precision, recall, false highlights,
-   missed highlights, and correction time.
-9. Add a review UI that exposes evidence, score, and game/profile overrides.
+8. **Implemented:** create durable labelled review sessions and calculate precision, recall, false
+   highlights, missed highlights, boundary correction, and correction rate.
+9. **Implemented:** run a bounded render/reviewer/revision loop with schema-bound multimodal model
+   output, evidence-linked corrections, durable rounds, and human fallback.
+10. Next, label multiple real player-view VODs, add detector-level signal labels/correction time,
+    and build a review UI that exposes evidence, score, and game/profile overrides.
 
 ## Reference behavior
 

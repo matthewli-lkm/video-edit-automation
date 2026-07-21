@@ -2,15 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from video_edit_automation.application.agent_workflow import HighlightAgentWorkflowService
 from video_edit_automation.application.automatic_gaming import AutomaticGamingHighlightService
 from video_edit_automation.application.capture import CaptureSessionService
 from video_edit_automation.application.gaming import GamingHighlightService
 from video_edit_automation.application.ports import (
     EditPlanner,
+    HighlightReviewer,
     HighlightSignalAnalyzer,
     MediaGateway,
     Repository,
 )
+from video_edit_automation.application.review import HighlightReviewService
 from video_edit_automation.application.services import (
     PlanService,
     PlanValidator,
@@ -24,7 +27,11 @@ from video_edit_automation.infrastructure.game_catalog import RegistryGameDetect
 from video_edit_automation.infrastructure.game_profiles import BUILTIN_GAME_PROFILES
 from video_edit_automation.infrastructure.league_ocr_analyzer import LeagueOcrSignalAnalyzer
 from video_edit_automation.infrastructure.openai_compatible_planner import OpenAICompatiblePlanner
+from video_edit_automation.infrastructure.openai_compatible_reviewer import (
+    OpenAICompatibleHighlightReviewer,
+)
 from video_edit_automation.infrastructure.paths import ImportPathPolicy, WorkspaceManager
+from video_edit_automation.infrastructure.review_frame_sampler import FFmpegReviewFrameSampler
 from video_edit_automation.infrastructure.sqlite_repository import SQLiteRepository
 
 
@@ -37,6 +44,9 @@ class Container:
     projects: ProjectService
     plans: PlanService
     gaming: GamingHighlightService
+    reviews: HighlightReviewService
+    reviewer: HighlightReviewer | None
+    agent_workflows: HighlightAgentWorkflowService
     signal_analyzer: HighlightSignalAnalyzer
     automatic_gaming: AutomaticGamingHighlightService
     captures: CaptureSessionService
@@ -50,6 +60,7 @@ def build_container(
     media: MediaGateway | None = None,
     planner: EditPlanner | None = None,
     signal_analyzer: HighlightSignalAnalyzer | None = None,
+    reviewer: HighlightReviewer | None = None,
 ) -> Container:
     settings = settings or Settings()
     repository = repository or SQLiteRepository(settings.database_path)
@@ -79,6 +90,26 @@ def build_container(
     projects = ProjectService(repository, media, path_policy, workspace)
     detector = RegistryGameDetector()
     gaming = GamingHighlightService(repository, plans, dict(BUILTIN_GAME_PROFILES))
+    reviews = HighlightReviewService(repository)
+    renders = RenderService(repository, media, validator, workspace)
+    if reviewer is None and settings.reviewer_enabled:
+        reviewer = OpenAICompatibleHighlightReviewer(
+            base_url=settings.reviewer_base_url,
+            model=settings.reviewer_model,
+            api_key=settings.reviewer_api_key,
+            timeout_seconds=settings.reviewer_timeout_seconds,
+            frame_sampler=FFmpegReviewFrameSampler(
+                ffmpeg_binary=settings.ffmpeg_binary,
+                width=settings.reviewer_frame_width,
+            ),
+        )
+    agent_workflows = HighlightAgentWorkflowService(
+        repository,
+        plans,
+        renders,
+        reviews,
+        reviewer,
+    )
     signal_analyzer = signal_analyzer or LeagueOcrSignalAnalyzer(
         ffmpeg_binary=settings.ffmpeg_binary,
         tesseract_binary=settings.tesseract_binary,
@@ -102,12 +133,16 @@ def build_container(
         projects=projects,
         plans=plans,
         gaming=gaming,
+        reviews=reviews,
+        reviewer=reviewer,
+        agent_workflows=agent_workflows,
         signal_analyzer=signal_analyzer,
         automatic_gaming=AutomaticGamingHighlightService(
             repository,
             detector,
             signal_analyzer,
             gaming,
+            reviews,
             workspace,
         ),
         captures=captures,
@@ -119,5 +154,5 @@ def build_container(
             poll_seconds=settings.capture_inbox_poll_seconds,
             automatic_scan_enabled=settings.capture_inbox_auto_scan,
         ),
-        renders=RenderService(repository, media, validator, workspace),
+        renders=renders,
     )

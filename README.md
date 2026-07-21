@@ -24,6 +24,10 @@ This initial scaffold provides:
 - deterministic League of Legends recognition from supplied process/window observations;
 - automatic League VOD candidate discovery from audio peaks and focused local HUD OCR;
 - persisted, typed gaming-analysis JSON plus one-call evidence-linked highlight-plan creation;
+- durable highlight-review sessions with accept, reject, boundary-adjustment, missed-event labels,
+  and deterministic evaluation metrics;
+- a bounded editor/reviewer workflow that renders previews, samples evidence frames, applies only
+  typed evidence-linked corrections, and stops after two review rounds by default;
 - clock-synchronized manual bookmarks that can directly create a MOBA highlight plan;
 - a Windows OBS companion plus Mac SMB/local inbox monitor with READY, checksum, idempotency, and
   reconnect-safe ingestion;
@@ -98,6 +102,13 @@ Game audio and microphone should remain on separate tracks. League OCR analysis 
 after ingestion; automatically triggering analysis and rendering for every READY package remains a
 later milestone.
 
+Each automatic League plan returns a `review_session`. Its evidence and candidates survive a
+restart, and review decisions can be submitted incrementally through the highlight-review API.
+When a multimodal reviewer is configured, a bounded agent workflow can render the current plan,
+sample representative preview frames, request an independent typed verdict, create a new validated
+plan from supported corrections, and repeat once. Metrics remain provisional until every proposed
+candidate has an accept, reject, or adjust decision. YouTube publishing and deletion remain absent.
+
 Manual imports reference source media in place. Capture-inbox imports are copied and checksum
 verified into the Mac's project workspace before editing. Source files are never overwritten.
 
@@ -107,6 +118,9 @@ The design keeps model choices replaceable:
 
 - **Speech-to-text:** add `whisper.cpp` first; it is offline and optimized for Apple Silicon.
 - **Edit planner:** connect LM Studio or Ollama through the same OpenAI-compatible adapter.
+- **Highlight reviewer:** point `VEA_REVIEWER_MODEL` at a multimodal OpenAI-compatible model. The
+  same Qwen instance can serve editor and reviewer calls sequentially, but each call gets a fresh
+  role-specific context.
 - **Starting model size:** a good 7B-14B instruct model is enough for structured selection from a transcript. Bigger is not automatically better for frame-accurate editing.
 - **Hardware:** the backend works on a 48 GB MacBook Pro, while the previously preferred 64 GB Mac setup gives more room to run transcription, an LLM, proxies, and the API together.
 

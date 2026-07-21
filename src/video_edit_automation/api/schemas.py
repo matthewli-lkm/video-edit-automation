@@ -24,6 +24,11 @@ from video_edit_automation.domain.models import (
     RenderPreset,
     TranscriptSegment,
 )
+from video_edit_automation.domain.review import (
+    HighlightEvaluationMetrics,
+    HighlightReviewDecision,
+    HighlightReviewSession,
+)
 
 
 class ApiModel(BaseModel):
@@ -98,6 +103,19 @@ class AutomaticGamingHighlightPlanRequest(ApiModel):
 class AutomaticGamingHighlightPlanResponse(GamingHighlightPlanResponse):
     analysis: HighlightAnalysis
     analysis_path: Path
+    review_session: HighlightReviewSession
+
+
+class HighlightReviewSnapshotResponse(ApiModel):
+    session: HighlightReviewSession
+    decisions: list[HighlightReviewDecision]
+    latest_candidate_decisions: list[HighlightReviewDecision]
+    metrics: HighlightEvaluationMetrics
+
+
+class HighlightAgentWorkflowCreateRequest(ApiModel):
+    render_preset: RenderPreset = Field(default_factory=RenderPreset)
+    maximum_review_rounds: int = Field(default=2, ge=1, le=5)
 
 
 class RenderRequest(ApiModel):
@@ -116,3 +134,4 @@ class HealthResponse(ApiModel):
     media_tools: str
     local_planner: str
     gaming_analyzer: str
+    highlight_reviewer: str

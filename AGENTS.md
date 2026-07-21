@@ -11,7 +11,7 @@ non-linear editor.
 
 ## Invariants
 
-1. An LLM may return only typed domain data, currently `EditPlanDraft`.
+1. An LLM may return only typed domain data: `EditPlanDraft` or `HighlightReviewerVerdict`.
 2. Never execute shell text, source paths, filtergraphs, or output paths produced by an LLM.
 3. Pass subprocess arguments as a list and keep `shell=False`.
 4. Resolve imported paths and require them to be inside configured media roots.

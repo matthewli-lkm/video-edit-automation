@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     llm_api_key: str = "local"
     llm_timeout_seconds: float = Field(default=120.0, gt=0, le=600)
 
+    reviewer_base_url: str = "http://127.0.0.1:1234/v1"
+    reviewer_model: str = ""
+    reviewer_api_key: str = "local"
+    reviewer_timeout_seconds: float = Field(default=120.0, gt=0, le=600)
+    reviewer_frame_width: int = Field(default=640, ge=320, le=1920)
+
     minimum_segment_seconds: float = Field(default=0.20, gt=0, le=10)
     source_time_tolerance_seconds: float = Field(default=0.05, ge=0, le=1)
 
@@ -61,6 +67,10 @@ class Settings(BaseSettings):
     @property
     def llm_enabled(self) -> bool:
         return bool(self.llm_model.strip())
+
+    @property
+    def reviewer_enabled(self) -> bool:
+        return bool(self.reviewer_model.strip())
 
     def normalized_media_roots(self) -> tuple[Path, ...]:
         return tuple(path.expanduser().resolve() for path in self.allowed_media_roots)

@@ -90,6 +90,33 @@ Rendering is blocked when:
 
 Target duration mismatches are warnings because the user may intentionally accept them.
 
+### Gaming review evidence
+
+Every automatic gaming analysis has a unique ID and immutable JSON artifact. Creating its edit plan
+also creates a durable `HighlightReviewSession` containing the exact source fingerprint, analyzer,
+game profile, detected signals, selected candidates, and plan ID. Review decisions are append-only:
+later decisions for the same candidate create a new revision rather than rewriting earlier labels.
+
+The current review contract supports accept, reject, adjusted boundaries, and explicitly missed
+events. Deterministic code calculates candidate precision/recall/F1, pending review count, accepted
+duration, boundary correction, correction rate, and missed-event counts. These are candidate-level
+selection metrics; detector-specific event precision requires a later signal-labelling extension.
+
+### Bounded reviewer workflow
+
+`HighlightAgentWorkflow` links one evidence review session to an immutable sequence of preview
+render jobs, reviewer verdicts, and validated plan versions. The reviewer may return only a typed
+`HighlightReviewerVerdict`: approve, require a human, or request `adjust`, `remove`, or `add`
+corrections. Deterministic application code rejects unknown segment references, invented signal
+IDs, out-of-duration ranges, overlaps, evidence-free additions or adjustments, repeated segment
+corrections, and no-op changes before asking `PlanService` to create a new version.
+
+Each round renders to a unique preview job and must pass the renderer's decode/duration validation
+before the reviewer receives bounded structured evidence and backend-extracted JPEG frames. A
+request contains at most 50 clips, 200 signals, and 12 frames. Two automatic review rounds are the
+default; another requested revision becomes `human_review_required`. Reviewer output cannot select
+paths, build media commands, publish, or delete files.
+
 ## Local workspace
 
 ```text
@@ -135,7 +162,8 @@ The local model may:
 - rank transcript moments against a brief;
 - choose segments from known timestamps;
 - explain why each segment is selected;
-- propose a title, summary, and caption wording.
+- propose a title, summary, and caption wording;
+- return a typed highlight-review verdict against supplied segment and signal IDs.
 
 The local model may not:
 
@@ -147,11 +175,14 @@ The local model may not:
 - publish content.
 
 Structured output is still untrusted input. Pydantic parsing is followed by repository-aware plan
-validation.
+validation. The only model-originated domain outputs currently accepted are `EditPlanDraft` and
+`HighlightReviewerVerdict`; neither contract contains paths, commands, publishing actions,
+credentials, or cleanup instructions.
 
 Gaming highlight scoring does not require an LLM. Typed game, telemetry, OCR, audio, motion,
-microphone-reaction, scene-change, and manual signals feed a deterministic scorer. A model may later
-rerank validated candidates or explain a plan, but it must not invent unsupported event evidence.
+microphone-reaction, scene-change, and manual signals feed a deterministic scorer. A configured
+multimodal model may independently review validated candidates and preview frames, but it must not
+invent unsupported event evidence.
 
 The first automatic gaming adapter, `league-ocr-audio-v1`, performs an FFmpeg audio scan, samples a
 bounded set of candidate HUD frames, and runs local Tesseract OCR. Its typed `HighlightAnalysis` is

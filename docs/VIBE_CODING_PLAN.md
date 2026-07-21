@@ -100,6 +100,27 @@ tests.
 This is not completion of all G2 acceptance criteria. A specific FPS adapter, microphone-reaction,
 motion and scene detectors, a labelled evaluation set, and player-perspective attribution remain.
 
+### G2b — League review/evaluation foundation (implemented)
+
+Every automatic League plan now creates a durable review session anchored to the exact analysis,
+source fingerprint, game profile, evidence signals, selected candidates, and edit plan. The API can
+accept, reject, revise candidate boundaries, or record a missed event without changing the original
+media or silently rewriting earlier decisions. It reports provisional/completed candidate metrics,
+accepted duration, boundary correction, correction rate, and missed-event counts. Building a useful
+labelled dataset still requires reviewing multiple real VODs; detector-level signal accuracy and the
+visual review UI remain later slices.
+
+### G2c — bounded editor/reviewer orchestration (implemented)
+
+An automatic League review session can now start a durable preview/review loop. Each round creates
+a unique validated preview, packages selected and unselected evidence with bounded frame samples,
+and accepts only a strict reviewer verdict. Evidence-supported corrections create a new validated
+`EditPlan` version; invented references, invalid ranges, overlaps, evidence-free additions, no-op
+changes, render failures, and excess review rounds stop safely for human review. A schema-bound
+multimodal OpenAI-compatible adapter can later point at Qwen directly or through Hermes; tests use
+scripted reviewers and no network or running model. Publishing and cleanup are deliberately out of
+scope.
+
 ## Milestone 1 — deterministic silence editor
 
 **Outcome:** analyse a single talking-head video for silence and create a plan that removes silence
@@ -194,6 +215,10 @@ validity, semantic coverage, and render success.
 This connects naturally to the separate model-benchmark project discussed previously: that system
 can evaluate candidate models, but this repository should only consume the selected provider/model
 through configuration. Do not merge a general benchmark platform into the editor.
+
+The gaming path now has the backend label and metric foundation for this milestone. Model/prompt
+comparisons, correction-time capture, aggregate reports across VODs, and the review UI are not yet
+implemented.
 
 ## Practical schedule
 
