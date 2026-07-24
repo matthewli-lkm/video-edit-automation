@@ -145,4 +145,3 @@ asset or session.
 - collecting League Live Client Data events and synchronized bookmarks on Windows;
 - automatically creating and rendering a highlight plan after signals arrive;
 - optionally returning finished renders to a Windows `Exports` share.
-
