@@ -32,6 +32,7 @@ from video_edit_automation.domain.models import (
     TranscriptSegment,
 )
 from video_edit_automation.domain.review import (
+    HighlightHumanReviewState,
     HighlightReviewDecision,
     HighlightReviewSession,
 )
@@ -94,6 +95,18 @@ class Repository(Protocol):
         self,
         session_id: UUID,
     ) -> list[HighlightReviewDecision]: ...
+
+    def save_highlight_human_review_state(self, state: HighlightHumanReviewState) -> None: ...
+
+    def get_highlight_human_review_state(
+        self,
+        session_id: UUID,
+    ) -> HighlightHumanReviewState | None: ...
+
+    def list_highlight_human_review_states(
+        self,
+        project_id: UUID,
+    ) -> list[HighlightHumanReviewState]: ...
 
     def save_highlight_agent_workflow(self, workflow: HighlightAgentWorkflow) -> None: ...
 

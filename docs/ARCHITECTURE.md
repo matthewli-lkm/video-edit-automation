@@ -15,7 +15,7 @@ LLM integration, validation, APIs, and media processing.
 
 ```mermaid
 flowchart LR
-    UI["Future Mac UI"] --> API["Local API"]
+    UI["Local review console"] --> API["Local API"]
     CAP["OBS or native capture adapter"] --> API
     API --> APP["Use cases"]
     APP --> DB[("SQLite")]
@@ -26,6 +26,11 @@ flowchart LR
 
 The default server address is `127.0.0.1`. No authentication is included because the service is
 not intended to be exposed outside the machine yet.
+
+The console is stored under `frontend/` and consumes types generated from FastAPI's OpenAPI schema.
+It may seek project-owned source or rendered media only through ID-based API routes. It never
+receives authority to choose source paths, render paths, FFmpeg arguments, publishing actions, or
+deletion actions.
 
 ## Dependency rule
 
@@ -116,6 +121,33 @@ before the reviewer receives bounded structured evidence and backend-extracted J
 request contains at most 50 clips, 200 signals, and 12 frames. Two automatic review rounds are the
 default; another requested revision becomes `human_review_required`. Reviewer output cannot select
 paths, build media commands, publish, or delete files.
+
+### Version-bound human approval
+
+`HighlightHumanReviewState` tracks the current plan for one gaming review session and retains its
+approval history. A browser revision submits a complete typed `EditPlanDraft` together with the plan
+ID it was based on. The application rejects stale revisions, validates the draft against real
+source durations, creates a new plan version, and clears active approval.
+
+Approval requires every proposed candidate to have a latest accept, adjust, or reject decision. It
+records the exact plan ID and version. `RenderService` permits preview jobs without approval but
+rejects final-render requests unless that exact plan/version remains active. Reviewer-agent approval
+never satisfies this check.
+
+Rendered media is exposed only by job ID. The API resolves the stored path again and requires it to
+be an MP4 inside that project's managed render directory; clients cannot submit or retrieve an
+arbitrary filesystem path.
+
+Source preview is exposed only by a project-and-asset pair. The project service confirms ownership,
+then re-applies either managed-import containment or configured media-root containment before
+returning the file. The browser never supplies a source path to this read route.
+
+### Dashboard state
+
+The workflow stepper is derived from durable backend facts and local unsaved state. Export is not
+complete until a final render succeeds. A trim draft or changed candidate decision returns the UI to
+review, blocks approval/rendering, and requires a new validated plan version before human approval.
+Agent 2 is optional and its approval is displayed separately from version-bound human approval.
 
 ## Local workspace
 

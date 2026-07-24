@@ -6,10 +6,11 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
-from video_edit_automation.application.gaming import HighlightScorer
+from video_edit_automation.application.gaming import GamingHighlightService, HighlightScorer
 from video_edit_automation.domain.gaming import (
     GameContext,
     HighlightAnalysis,
+    HighlightCandidate,
     HighlightSignal,
     HighlightSignalType,
 )
@@ -93,6 +94,37 @@ def test_fps_signals_are_weighted_and_nearby_windows_are_merged() -> None:
     assert candidates[0].start_seconds == 28
     assert candidates[0].end_seconds == 51
     assert candidates[0].score > 1
+
+
+def test_gaming_duration_is_a_maximum_and_shorter_edits_are_valid() -> None:
+    asset_id = uuid4()
+    candidates = [
+        HighlightCandidate(
+            asset_id=asset_id,
+            start_seconds=0,
+            end_seconds=35,
+            score=1,
+            signal_ids=["highest"],
+        ),
+        HighlightCandidate(
+            asset_id=asset_id,
+            start_seconds=40,
+            end_seconds=70,
+            score=0.9,
+            signal_ids=["second"],
+        ),
+    ]
+
+    limited = GamingHighlightService._select_candidates(candidates, 60, 8)
+    assert [candidate.signal_ids for candidate in limited] == [["highest"]]
+    assert sum(candidate.duration_seconds for candidate in limited) == 35
+
+    below_limit = GamingHighlightService._select_candidates(candidates, 90, 8)
+    assert [candidate.signal_ids for candidate in below_limit] == [
+        ["highest"],
+        ["second"],
+    ]
+    assert sum(candidate.duration_seconds for candidate in below_limit) == 65
 
 
 def test_gaming_profile_api_creates_evidence_linked_plan(

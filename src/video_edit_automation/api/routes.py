@@ -3,6 +3,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Request, status
+from fastapi.responses import FileResponse
 
 from video_edit_automation.api.schemas import (
     AssetImportRequest,
@@ -16,7 +17,10 @@ from video_edit_automation.api.schemas import (
     GamingHighlightPlanResponse,
     HealthResponse,
     HighlightAgentWorkflowCreateRequest,
+    HighlightHumanReviewStateResponse,
     HighlightReviewSnapshotResponse,
+    HumanPlanApprovalRequest,
+    HumanPlanRevisionRequest,
     PlanCreateRequest,
     PlanGenerateRequest,
     PlanWithValidation,
@@ -33,10 +37,12 @@ from video_edit_automation.domain.capture import (
     GameCatalogEntry,
     ManualBookmarkInput,
 )
+from video_edit_automation.domain.errors import EntityNotFoundError
 from video_edit_automation.domain.gaming import DetectedGame, GameProfile, HighlightSignal
 from video_edit_automation.domain.models import (
     EditPlan,
     Job,
+    JobStatus,
     MediaAsset,
     PlanValidationReport,
     Project,
@@ -60,6 +66,21 @@ def _review_response(snapshot: HighlightReviewSnapshot) -> HighlightReviewSnapsh
         decisions=snapshot.decisions,
         latest_candidate_decisions=snapshot.latest_candidate_decisions,
         metrics=snapshot.metrics,
+    )
+
+
+def _human_review_response(
+    project_id: UUID,
+    review_id: UUID,
+    request: Request,
+) -> HighlightHumanReviewStateResponse:
+    container = _container(request)
+    state = container.human_reviews.get_state(project_id, review_id)
+    plan = container.plans.get(project_id, state.current_plan_id)
+    return HighlightHumanReviewStateResponse(
+        state=state,
+        plan=plan,
+        validation=container.plans.validate_saved(project_id, plan.id),
     )
 
 
@@ -123,6 +144,15 @@ def import_asset(project_id: UUID, payload: AssetImportRequest, request: Request
 @router.get("/api/v1/projects/{project_id}/assets", response_model=list[MediaAsset])
 def list_assets(project_id: UUID, request: Request) -> list[MediaAsset]:
     return _container(request).projects.list_assets(project_id)
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/assets/{asset_id}/media",
+    response_class=FileResponse,
+)
+def get_asset_media(project_id: UUID, asset_id: UUID, request: Request) -> FileResponse:
+    source = _container(request).projects.resolve_asset_media(project_id, asset_id)
+    return FileResponse(source)
 
 
 @router.put(
@@ -332,6 +362,58 @@ def record_highlight_review_decision(
     return _review_response(snapshot)
 
 
+@router.get(
+    "/api/v1/projects/{project_id}/gaming/highlight-reviews/{review_id}/human-review",
+    response_model=HighlightHumanReviewStateResponse,
+)
+def get_highlight_human_review(
+    project_id: UUID,
+    review_id: UUID,
+    request: Request,
+) -> HighlightHumanReviewStateResponse:
+    return _human_review_response(project_id, review_id, request)
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/gaming/highlight-reviews/{review_id}/human-review/revisions",
+    response_model=HighlightHumanReviewStateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def revise_highlight_plan(
+    project_id: UUID,
+    review_id: UUID,
+    payload: HumanPlanRevisionRequest,
+    request: Request,
+) -> HighlightHumanReviewStateResponse:
+    _container(request).human_reviews.revise(
+        project_id,
+        review_id,
+        payload.expected_plan_id,
+        payload.draft,
+    )
+    return _human_review_response(project_id, review_id, request)
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/gaming/highlight-reviews/{review_id}/human-review/approval",
+    response_model=HighlightHumanReviewStateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def approve_highlight_plan(
+    project_id: UUID,
+    review_id: UUID,
+    payload: HumanPlanApprovalRequest,
+    request: Request,
+) -> HighlightHumanReviewStateResponse:
+    _container(request).human_reviews.approve(
+        project_id,
+        review_id,
+        payload.plan_id,
+        payload.plan_version,
+    )
+    return _human_review_response(project_id, review_id, request)
+
+
 @router.post(
     "/api/v1/projects/{project_id}/gaming/highlight-reviews/{review_id}/agent-workflows",
     response_model=HighlightAgentWorkflow,
@@ -462,3 +544,13 @@ def queue_render(
 @router.get("/api/v1/jobs/{job_id}", response_model=Job)
 def get_job(job_id: UUID, request: Request) -> Job:
     return _container(request).renders.get_job(job_id)
+
+
+@router.get("/api/v1/jobs/{job_id}/media", response_class=FileResponse)
+def get_job_media(job_id: UUID, request: Request) -> FileResponse:
+    container = _container(request)
+    job = container.renders.get_job(job_id)
+    if job.status != JobStatus.SUCCEEDED or job.output_path is None:
+        raise EntityNotFoundError(f"Rendered media for job {job_id} is not available")
+    output = container.workspace.resolve_render_output(job.project_id, job.output_path)
+    return FileResponse(output, media_type="video/mp4")

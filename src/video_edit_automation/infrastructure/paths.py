@@ -88,6 +88,18 @@ class WorkspaceManager:
             raise RuntimeError("Resolved render output escaped the project workspace")
         return output
 
+    def resolve_render_output(self, project_id: UUID, requested_path: Path) -> Path:
+        renders_root = (self.ensure_project(project_id) / "renders").resolve()
+        try:
+            resolved = requested_path.resolve(strict=True)
+        except (FileNotFoundError, OSError) as exc:
+            raise PathNotAllowedError("The rendered media file does not exist") from exc
+        if not resolved.is_file() or not resolved.is_relative_to(renders_root):
+            raise PathNotAllowedError("Rendered media must stay inside the project workspace")
+        if resolved.suffix.lower() != ".mp4":
+            raise UnsupportedMediaError("Rendered previews must be MP4 files")
+        return resolved
+
     def gaming_analysis_output(
         self,
         project_id: UUID,

@@ -28,6 +28,12 @@ This initial scaffold provides:
   and deterministic evaluation metrics;
 - a bounded editor/reviewer workflow that renders previews, samples evidence frames, applies only
   typed evidence-linked corrections, and stops after two review rounds by default;
+- durable human-review state that versions timeline revisions, binds approval to one exact plan
+  version, and gates every final render;
+- project-scoped source playback and safe browser playback for backend-owned preview jobs, plus
+  configurable localhost dashboard CORS;
+- an integrated gaming review console with whole-source/current-cut/reel previews, evidence seeking,
+  trim history, versioned approval, and final-output delivery actions;
 - clock-synchronized manual bookmarks that can directly create a MOBA highlight plan;
 - a Windows OBS companion plus Mac SMB/local inbox monitor with READY, checksum, idempotency, and
   reconnect-safe ingestion;
@@ -36,8 +42,9 @@ This initial scaffold provides:
 - dry-run FFmpeg command generation and background preview/final rendering;
 - unit and media integration tests.
 
-Live OS capture, League telemetry, automatic FPS detectors, transcription, captions, and a timeline
-UI are later vertical slices. See the [cross-device OBS guide](docs/CROSS_DEVICE_OBS.md),
+Live OS capture, League telemetry, automatic FPS detectors, transcription, captions, and
+multi-category runtime recipes are later vertical slices. See the
+[cross-device OBS guide](docs/CROSS_DEVICE_OBS.md),
 [vibe-coding plan](docs/VIBE_CODING_PLAN.md), and
 [gaming architecture](docs/GAMING_ARCHITECTURE.md).
 
@@ -60,8 +67,8 @@ The LLM never writes shell commands, arbitrary FFmpeg filters, or source-file pa
 
 ## Quick start
 
-Prerequisites: Python 3.12+, [`uv`](https://docs.astral.sh/uv/), FFmpeg/ffprobe, and Tesseract for
-automatic League analysis.
+Prerequisites: Python 3.12+, Node.js 22+, [`uv`](https://docs.astral.sh/uv/), FFmpeg/ffprobe, and
+Tesseract for automatic League analysis.
 
 On a future Mac:
 
@@ -73,6 +80,19 @@ uv run uvicorn video_edit_automation.main:app --reload --host 127.0.0.1 --port 8
 ```
 
 Then open `http://127.0.0.1:8765/docs` for the interactive API.
+
+To run the backend and review console together:
+
+```bash
+npm --prefix frontend ci
+uv run python scripts/export_openapi.py
+npm --prefix frontend run api:generate
+./scripts/dev-dashboard.sh
+```
+
+Open `http://127.0.0.1:4173`. The dashboard connects only to the localhost API. Agent 2 remains
+optional; deterministic analysis, manual review, exact-version approval, and rendering work without
+a configured reviewer model.
 
 Run the checks:
 
@@ -109,6 +129,10 @@ sample representative preview frames, request an independent typed verdict, crea
 plan from supported corrections, and repeat once. Metrics remain provisional until every proposed
 candidate has an accept, reject, or adjust decision. YouTube publishing and deletion remain absent.
 
+Human approval is a separate authority boundary. A browser revision submits a complete typed plan,
+creates a validated version, and clears any earlier approval. Final rendering is rejected unless the
+exact current plan ID and version have active human approval; Agent 2 approval alone is insufficient.
+
 Manual imports reference source media in place. Capture-inbox imports are copied and checksum
 verified into the Mac's project workspace before editing. Source files are never overwritten.
 
@@ -137,6 +161,8 @@ The media pipeline and LLM can also live on separate machines later: keep this M
 - `src/video_edit_automation/application/` — use cases and ports
 - `src/video_edit_automation/infrastructure/` — FFmpeg, SQLite, paths, and local LLM adapters
 - `src/video_edit_automation/api/` — HTTP boundary only
+- `frontend/` — local gaming review console and generated API types
+- `scripts/dev-dashboard.sh` — one-command local frontend/backend startup
 
 ## Non-goals for the first release
 

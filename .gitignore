@@ -10,6 +10,8 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.npm-cache/
+.uv-cache/
 htmlcov/
 dist/
 build/
@@ -17,4 +19,3 @@ data/
 *.sqlite3
 *.db
 *.log
-

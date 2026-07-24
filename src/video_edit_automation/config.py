@@ -34,6 +34,15 @@ class Settings(BaseSettings):
     capture_inbox_roots: list[Path] = Field(default_factory=list)
     capture_inbox_poll_seconds: float = Field(default=15, ge=1, le=3_600)
     capture_inbox_auto_scan: bool = True
+    dashboard_allowed_origins: list[str] = Field(
+        default_factory=lambda: [
+            "http://127.0.0.1:3000",
+            "http://localhost:3000",
+            "http://127.0.0.1:4173",
+            "http://localhost:4173",
+            "http://terminal.local:4173",
+        ]
+    )
 
     ffmpeg_binary: str = "ffmpeg"
     ffprobe_binary: str = "ffprobe"

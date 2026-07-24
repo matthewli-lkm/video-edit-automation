@@ -197,6 +197,9 @@ POST /api/v1/projects/{project_id}/assets/{asset_id}/gaming/auto-highlight-plans
 }
 ```
 
+   For the deterministic gaming selector, `target_duration_seconds` is an upper limit. The selector
+   may return a shorter evidence-backed reel when adding another candidate would exceed that limit.
+
    The response includes the detected signals, selected candidates, validated plan, path to the
    persisted analysis JSON, and a durable `review_session`.
 7. Review the evidence-linked plan and render with `source_mix` or `game_only` audio.

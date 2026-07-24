@@ -13,6 +13,7 @@ from video_edit_automation.domain.capture import CaptureSession
 from video_edit_automation.domain.gaming import HighlightAnalysis
 from video_edit_automation.domain.models import EditPlan, Job, MediaAsset, Project
 from video_edit_automation.domain.review import (
+    HighlightHumanReviewState,
     HighlightReviewDecision,
     HighlightReviewSession,
 )
@@ -239,6 +240,35 @@ class SQLiteRepository:
             HighlightReviewDecision.model_validate_json,
         )
         return [decision for decision in decisions if decision.review_session_id == session_id]
+
+    def save_highlight_human_review_state(self, state: HighlightHumanReviewState) -> None:
+        self._save(
+            "highlight_human_review_state",
+            state,
+            state.review_session_id,
+            state.project_id,
+            state.created_at.isoformat(),
+        )
+
+    def get_highlight_human_review_state(
+        self,
+        session_id: UUID,
+    ) -> HighlightHumanReviewState | None:
+        return self._get(
+            "highlight_human_review_state",
+            session_id,
+            HighlightHumanReviewState.model_validate_json,
+        )
+
+    def list_highlight_human_review_states(
+        self,
+        project_id: UUID,
+    ) -> list[HighlightHumanReviewState]:
+        return self._list(
+            "highlight_human_review_state",
+            HighlightHumanReviewState.model_validate_json,
+            project_id,
+        )
 
     def save_highlight_agent_workflow(self, workflow: HighlightAgentWorkflow) -> None:
         self._save(

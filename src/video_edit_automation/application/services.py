@@ -9,6 +9,7 @@ from video_edit_automation.domain.errors import (
     EntityNotFoundError,
     InvalidEditPlanError,
     MediaToolError,
+    PathNotAllowedError,
     PlannerUnavailableError,
 )
 from video_edit_automation.domain.models import (
@@ -22,6 +23,7 @@ from video_edit_automation.domain.models import (
     PlanValidationReport,
     Project,
     RenderPreset,
+    RenderProfile,
     TranscriptSegment,
     ValidationIssue,
     ValidationSeverity,
@@ -61,6 +63,18 @@ class ProjectService:
     def list_assets(self, project_id: UUID) -> list[MediaAsset]:
         self.get(project_id)
         return self.repository.list_assets(project_id)
+
+    def resolve_asset_media(self, project_id: UUID, asset_id: UUID) -> Path:
+        self.get(project_id)
+        asset = self.repository.get_asset(asset_id)
+        if asset is None or asset.project_id != project_id:
+            raise EntityNotFoundError(
+                f"Media asset {asset_id} was not found in project {project_id}"
+            )
+        try:
+            return self.workspace.resolve_managed_import(project_id, asset.source_path)
+        except PathNotAllowedError:
+            return self.path_policy.resolve_media_file(asset.source_path)
 
     def import_asset(self, project_id: UUID, requested_path: str | Path) -> MediaAsset:
         self.get(project_id)
@@ -373,7 +387,22 @@ class RenderService:
         return self.media.build_render_command(plan, assets, placeholder, preset)
 
     def queue(self, project_id: UUID, plan_id: UUID, preset: RenderPreset) -> Job:
-        self._load_render_context(project_id, plan_id)
+        plan, _assets = self._load_render_context(project_id, plan_id)
+        if preset.profile == RenderProfile.FINAL:
+            approved = any(
+                state.current_plan_id == plan.id
+                and any(
+                    approval.id == state.active_approval_id
+                    and approval.plan_id == plan.id
+                    and approval.plan_version == plan.version
+                    for approval in state.approvals
+                )
+                for state in self.repository.list_highlight_human_review_states(project_id)
+            )
+            if not approved:
+                raise InvalidEditPlanError(
+                    "Final rendering requires explicit human approval of this exact plan version"
+                )
         job = Job(project_id=project_id, plan_id=plan_id, preset=preset)
         job = job.model_copy(
             update={

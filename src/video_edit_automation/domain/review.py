@@ -171,3 +171,38 @@ class HighlightEvaluationMetrics(ReviewModel):
     manual_correction_count: int = Field(ge=0)
     correction_rate: float = Field(ge=0, le=1)
     missed_event_counts: dict[str, int] = Field(default_factory=dict)
+
+
+class HumanPlanApproval(ReviewModel):
+    id: UUID = Field(default_factory=uuid4)
+    plan_id: UUID
+    plan_version: int = Field(ge=1)
+    approved_at: datetime = Field(default_factory=utc_now)
+
+
+class HighlightHumanReviewState(ReviewModel):
+    project_id: UUID
+    review_session_id: UUID
+    initial_plan_id: UUID
+    current_plan_id: UUID
+    approvals: list[HumanPlanApproval] = Field(default_factory=list)
+    active_approval_id: UUID | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def active_approval_matches_current_plan(self) -> HighlightHumanReviewState:
+        approval_ids = [approval.id for approval in self.approvals]
+        if len(set(approval_ids)) != len(approval_ids):
+            raise ValueError("human approval IDs must be unique")
+        if self.active_approval_id is None:
+            return self
+        approval = next(
+            (item for item in self.approvals if item.id == self.active_approval_id),
+            None,
+        )
+        if approval is None:
+            raise ValueError("active_approval_id must reference a saved approval")
+        if approval.plan_id != self.current_plan_id:
+            raise ValueError("active approval must reference the current plan")
+        return self

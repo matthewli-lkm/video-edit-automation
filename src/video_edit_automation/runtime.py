@@ -13,7 +13,10 @@ from video_edit_automation.application.ports import (
     MediaGateway,
     Repository,
 )
-from video_edit_automation.application.review import HighlightReviewService
+from video_edit_automation.application.review import (
+    HighlightHumanReviewService,
+    HighlightReviewService,
+)
 from video_edit_automation.application.services import (
     PlanService,
     PlanValidator,
@@ -45,6 +48,7 @@ class Container:
     plans: PlanService
     gaming: GamingHighlightService
     reviews: HighlightReviewService
+    human_reviews: HighlightHumanReviewService
     reviewer: HighlightReviewer | None
     agent_workflows: HighlightAgentWorkflowService
     signal_analyzer: HighlightSignalAnalyzer
@@ -91,6 +95,7 @@ def build_container(
     detector = RegistryGameDetector()
     gaming = GamingHighlightService(repository, plans, dict(BUILTIN_GAME_PROFILES))
     reviews = HighlightReviewService(repository)
+    human_reviews = HighlightHumanReviewService(repository, plans)
     renders = RenderService(repository, media, validator, workspace)
     if reviewer is None and settings.reviewer_enabled:
         reviewer = OpenAICompatibleHighlightReviewer(
@@ -134,6 +139,7 @@ def build_container(
         plans=plans,
         gaming=gaming,
         reviews=reviews,
+        human_reviews=human_reviews,
         reviewer=reviewer,
         agent_workflows=agent_workflows,
         signal_analyzer=signal_analyzer,

@@ -4,6 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from video_edit_automation import __version__
@@ -99,6 +100,17 @@ def create_app(
         version=__version__,
         description="Local-first API for validated, AI-assisted video edit decisions.",
         lifespan=lifespan,
+    )
+    allowed_dashboard_origins = (
+        settings.dashboard_allowed_origins
+        if settings is not None
+        else Settings().dashboard_allowed_origins
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_dashboard_origins,
+        allow_methods=["GET", "POST", "PUT", "OPTIONS"],
+        allow_headers=["Content-Type"],
     )
 
     @app.exception_handler(DomainError)

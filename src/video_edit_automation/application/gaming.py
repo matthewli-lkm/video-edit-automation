@@ -135,18 +135,21 @@ class GamingHighlightService:
     @staticmethod
     def _select_candidates(
         candidates: list[HighlightCandidate],
-        target_duration_seconds: float | None,
+        maximum_duration_seconds: float | None,
         max_highlights: int,
     ) -> list[HighlightCandidate]:
         ranked = sorted(candidates, key=lambda item: (-item.score, item.duration_seconds))
         selected: list[HighlightCandidate] = []
         selected_duration = 0.0
-        budget = target_duration_seconds * 1.10 if target_duration_seconds else None
         for candidate in ranked:
             if len(selected) >= max_highlights:
                 break
-            fits_budget = budget is None or selected_duration + candidate.duration_seconds <= budget
-            if fits_budget or not selected:
+            fits_limit = (
+                maximum_duration_seconds is None
+                or selected_duration + candidate.duration_seconds
+                <= maximum_duration_seconds
+            )
+            if fits_limit:
                 selected.append(candidate)
                 selected_duration += candidate.duration_seconds
         return sorted(selected, key=lambda item: (str(item.asset_id), item.start_seconds))
@@ -170,6 +173,10 @@ class GamingHighlightService:
             max_highlights,
         )
         if not selected:
+            if candidates and brief.target_duration_seconds is not None:
+                raise InvalidEditPlanError(
+                    "No highlight candidate fits within the maximum duration"
+                )
             raise InvalidEditPlanError(
                 "No highlight candidates reached this gaming profile's minimum score"
             )

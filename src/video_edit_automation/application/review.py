@@ -5,20 +5,23 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from video_edit_automation.application.ports import Repository
+from video_edit_automation.application.services import PlanService
 from video_edit_automation.domain.errors import (
     EntityNotFoundError,
     InvalidHighlightReviewError,
 )
 from video_edit_automation.domain.gaming import HighlightAnalysis, HighlightCandidate
-from video_edit_automation.domain.models import EditPlan
+from video_edit_automation.domain.models import EditPlan, EditPlanDraft, utc_now
 from video_edit_automation.domain.review import (
     HighlightEvaluationMetrics,
+    HighlightHumanReviewState,
     HighlightReviewAction,
     HighlightReviewCandidate,
     HighlightReviewDecision,
     HighlightReviewDecisionInput,
     HighlightReviewDecisionSource,
     HighlightReviewSession,
+    HumanPlanApproval,
 )
 
 
@@ -318,3 +321,111 @@ class HighlightReviewService:
             ),
             missed_event_counts=dict(sorted(missed_event_counts.items())),
         )
+
+
+class HighlightHumanReviewService:
+    """Owns version-bound human revisions and approval for final rendering."""
+
+    def __init__(self, repository: Repository, plans: PlanService) -> None:
+        self.repository = repository
+        self.plans = plans
+
+    def get_state(
+        self,
+        project_id: UUID,
+        review_session_id: UUID,
+    ) -> HighlightHumanReviewState:
+        session = self._session(project_id, review_session_id)
+        state = self.repository.get_highlight_human_review_state(review_session_id)
+        if state is not None:
+            if state.project_id != project_id:
+                raise EntityNotFoundError(
+                    f"Human review {review_session_id} was not found in project {project_id}"
+                )
+            return state
+        state = HighlightHumanReviewState(
+            project_id=project_id,
+            review_session_id=review_session_id,
+            initial_plan_id=session.plan_id,
+            current_plan_id=session.plan_id,
+        )
+        self.repository.save_highlight_human_review_state(state)
+        return state
+
+    def revise(
+        self,
+        project_id: UUID,
+        review_session_id: UUID,
+        expected_plan_id: UUID,
+        draft: EditPlanDraft,
+    ) -> HighlightHumanReviewState:
+        session = self._session(project_id, review_session_id)
+        state = self.get_state(project_id, review_session_id)
+        if state.current_plan_id != expected_plan_id:
+            raise InvalidHighlightReviewError(
+                "The review plan changed after this page loaded; refresh before saving"
+            )
+        current_plan = self.plans.get(project_id, expected_plan_id)
+        if any(segment.asset_id != session.asset_id for segment in draft.segments):
+            raise InvalidHighlightReviewError(
+                "A gaming review revision may reference only its reviewed source asset"
+            )
+        revised, _report = self.plans.create_derived(
+            project_id,
+            current_plan.brief,
+            draft,
+            f"human-review:{review_session_id}",
+        )
+        updated = state.model_copy(
+            update={
+                "current_plan_id": revised.id,
+                "active_approval_id": None,
+                "updated_at": utc_now(),
+            }
+        )
+        self.repository.save_highlight_human_review_state(updated)
+        return updated
+
+    def approve(
+        self,
+        project_id: UUID,
+        review_session_id: UUID,
+        plan_id: UUID,
+        plan_version: int,
+    ) -> HighlightHumanReviewState:
+        state = self.get_state(project_id, review_session_id)
+        if state.current_plan_id != plan_id:
+            raise InvalidHighlightReviewError(
+                "Only the current review plan can receive human approval"
+            )
+        plan = self.plans.get(project_id, plan_id)
+        if plan.version != plan_version:
+            raise InvalidHighlightReviewError(
+                "The plan version changed after this page loaded; refresh before approving"
+            )
+        decisions = self.repository.list_highlight_review_decisions(review_session_id)
+        session = self._session(project_id, review_session_id)
+        latest = HighlightReviewService._latest_candidate_decisions(session, decisions)
+        metrics = HighlightReviewService._metrics(session, decisions, latest)
+        if not metrics.review_complete:
+            raise InvalidHighlightReviewError(
+                "Every proposed highlight must be accepted, adjusted, or rejected before approval"
+            )
+        approval = HumanPlanApproval(plan_id=plan.id, plan_version=plan.version)
+        updated = state.model_copy(
+            update={
+                "approvals": [*state.approvals, approval],
+                "active_approval_id": approval.id,
+                "updated_at": utc_now(),
+            }
+        )
+        self.repository.save_highlight_human_review_state(updated)
+        return updated
+
+    def _session(self, project_id: UUID, session_id: UUID) -> HighlightReviewSession:
+        session = self.repository.get_highlight_review_session(session_id)
+        if session is None or session.project_id != project_id:
+            raise EntityNotFoundError(
+                f"Highlight review {session_id} was not found in project {project_id}"
+            )
+        return session

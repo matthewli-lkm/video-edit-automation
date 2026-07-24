@@ -84,6 +84,17 @@ def test_import_is_idempotent(client: TestClient, media_root: Path) -> None:
     assert second.json()["id"] == first["id"]
 
 
+def test_source_media_is_project_scoped(client: TestClient, media_root: Path) -> None:
+    project, asset = _create_project_and_asset(client, media_root)
+    media = client.get(f"/api/v1/projects/{project['id']}/assets/{asset['id']}/media")
+    assert media.status_code == 200
+    assert media.content == b"fake source"
+
+    other_project = client.post("/api/v1/projects", json={"name": "Other project"}).json()
+    blocked = client.get(f"/api/v1/projects/{other_project['id']}/assets/{asset['id']}/media")
+    assert blocked.status_code == 404
+
+
 def test_import_outside_allowed_root_is_rejected(client: TestClient, tmp_path: Path) -> None:
     project = client.post("/api/v1/projects", json={"name": "Restricted"}).json()
     outside = tmp_path / "outside.mov"

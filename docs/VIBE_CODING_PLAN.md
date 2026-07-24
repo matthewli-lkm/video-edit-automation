@@ -207,6 +207,40 @@ users can include/exclude or trim segments before final export.
 - progress survives page refresh;
 - keyboard-first controls cover normal review.
 
+### G2d — gaming review console (implemented)
+
+The gaming workflow now has a compact local-first console with source and project selection,
+plain-language editing instructions, preview playback, evidence-linked candidate decisions,
+boundary adjustment, Agent 2 status, versioned human revisions, explicit approval, and final-render
+requests. Backend state restores after refresh; realistic demo data keeps the interface testable
+before a local model is available.
+
+The review surface separates full-source orientation, the selected generated region, and the
+rendered reel. A source overview shows every detected candidate in recording time, while a zoomed
+current-cut view highlights the exact In/Out region, supports draggable and typed `MM:SS.s`
+boundaries, and provides direct boundary checks.
+
+Human approval is stored separately from reviewer-agent approval. It is tied to the current plan ID
+and version, any revision invalidates it, and final rendering remains blocked until the revised plan
+is approved. Publishing, cleanup, live capture, vertical output, and multi-category runtime recipes
+remain later milestones.
+
+### G2e — dashboard integration and correctness (implemented)
+
+The deployed review console now lives in the main repository with the backend. A fresh checkout can
+install the frontend, generate API types from FastAPI, and start both local processes with one
+script.
+
+The workflow display is derived from actual source, analysis, decision, approval, and final-render
+state. The player has explicit whole-source, current-cut, and generated-reel modes; a compact source
+scrubber sits directly beneath it; evidence rows seek to their timestamps; and the trim view has
+unsaved-state protection, reset, undo, and redo. Candidate changes require a new plan version before
+approval or final rendering. Agent 2 remains optional, and final output actions appear only after a
+successful render.
+
+Browser-compatible proxy generation, render-job restoration after application restart, and
+duplicate-job protection remain the separate G2f media-reliability milestone.
+
 ## Milestone 6 — evaluation and learning loop
 
 **Outcome:** compare planner models/prompts using accepted/rejected segments, correction time, plan
@@ -216,8 +250,8 @@ This connects naturally to the separate model-benchmark project discussed previo
 can evaluate candidate models, but this repository should only consume the selected provider/model
 through configuration. Do not merge a general benchmark platform into the editor.
 
-The gaming path now has the backend label and metric foundation for this milestone. Model/prompt
-comparisons, correction-time capture, aggregate reports across VODs, and the review UI are not yet
+The gaming path now has the backend label, metric foundation, and review console for this milestone.
+Model/prompt comparisons, correction-time capture, and aggregate reports across VODs are not yet
 implemented.
 
 ## Practical schedule

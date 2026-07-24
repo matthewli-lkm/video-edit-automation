@@ -230,3 +230,175 @@ def test_review_rejects_invalid_ranges_and_cross_project_access(
     listing = client.get(f"/api/v1/projects/{project['id']}/gaming/highlight-reviews")
     assert listing.status_code == 200
     assert [item["id"] for item in listing.json()] == [review["id"]]
+
+
+def test_human_approval_is_version_bound_and_gates_final_render(
+    client: TestClient,
+    media_root: Path,
+) -> None:
+    project, _asset, automatic = _create_two_candidate_review(client, media_root)
+    review = automatic["review_session"]
+    review_url = f"/api/v1/projects/{project['id']}/gaming/highlight-reviews/{review['id']}"
+    plan = automatic["plan"]
+
+    initial = client.get(f"{review_url}/human-review")
+    assert initial.status_code == 200
+    assert initial.json()["state"]["current_plan_id"] == plan["id"]
+    assert initial.json()["state"]["active_approval_id"] is None
+
+    incomplete = client.post(
+        f"{review_url}/human-review/approval",
+        json={"plan_id": plan["id"], "plan_version": plan["version"]},
+    )
+    assert incomplete.status_code == 422
+
+    for candidate in review["candidates"]:
+        decision = client.post(
+            f"{review_url}/decisions",
+            json={"action": "accept", "candidate_id": candidate["id"]},
+        )
+        assert decision.status_code == 201
+
+    approved = client.post(
+        f"{review_url}/human-review/approval",
+        json={"plan_id": plan["id"], "plan_version": plan["version"]},
+    )
+    assert approved.status_code == 201
+    assert approved.json()["state"]["active_approval_id"] is not None
+
+    final_render = client.post(
+        f"/api/v1/projects/{project['id']}/edit-plans/{plan['id']}/renders",
+        json={"preset": {"profile": "final", "aspect_ratio": "16:9"}},
+    )
+    assert final_render.status_code == 202
+
+    draft = {
+        "title": plan["title"],
+        "summary": plan["summary"],
+        "segments": plan["segments"],
+    }
+    draft["segments"][0]["source_in_seconds"] += 1
+    revised = client.post(
+        f"{review_url}/human-review/revisions",
+        json={"expected_plan_id": plan["id"], "draft": draft},
+    )
+    assert revised.status_code == 201
+    revised_payload = revised.json()
+    assert revised_payload["plan"]["id"] != plan["id"]
+    assert revised_payload["plan"]["version"] > plan["version"]
+    assert revised_payload["state"]["active_approval_id"] is None
+
+    stale_approval = client.post(
+        f"{review_url}/human-review/approval",
+        json={"plan_id": plan["id"], "plan_version": plan["version"]},
+    )
+    assert stale_approval.status_code == 422
+
+    old_final_render = client.post(
+        f"/api/v1/projects/{project['id']}/edit-plans/{plan['id']}/renders",
+        json={"preset": {"profile": "final", "aspect_ratio": "16:9"}},
+    )
+    assert old_final_render.status_code == 422
+
+
+def test_human_revision_can_include_a_recorded_missed_highlight(
+    client: TestClient,
+    media_root: Path,
+) -> None:
+    project, asset, automatic = _create_two_candidate_review(client, media_root)
+    review = automatic["review_session"]
+    plan = automatic["plan"]
+    review_url = f"/api/v1/projects/{project['id']}/gaming/highlight-reviews/{review['id']}"
+
+    for candidate in review["candidates"]:
+        response = client.post(
+            f"{review_url}/decisions",
+            json={"action": "accept", "candidate_id": candidate["id"]},
+        )
+        assert response.status_code == 201
+
+    missed = client.post(
+        f"{review_url}/decisions",
+        json={
+            "action": "missed_highlight",
+            "start_seconds": 170,
+            "end_seconds": 180,
+            "event_name": "manual team fight",
+        },
+    )
+    assert missed.status_code == 201
+
+    segments = [
+        *plan["segments"],
+        {
+            "asset_id": asset["id"],
+            "source_in_seconds": 170,
+            "source_out_seconds": 180,
+            "purpose": "Manual · team fight",
+            "transcript_segment_ids": [],
+            "highlight_signal_ids": [],
+        },
+    ]
+    revised = client.post(
+        f"{review_url}/human-review/revisions",
+        json={
+            "expected_plan_id": plan["id"],
+            "draft": {
+                "title": plan["title"],
+                "summary": plan["summary"],
+                "segments": segments,
+            },
+        },
+    )
+    assert revised.status_code == 201
+    payload = revised.json()
+    assert payload["plan"]["segments"][-1]["highlight_signal_ids"] == []
+    assert payload["plan"]["segments"][-1]["source_in_seconds"] == 170
+    assert payload["state"]["active_approval_id"] is None
+
+    approved = client.post(
+        f"{review_url}/human-review/approval",
+        json={
+            "plan_id": payload["plan"]["id"],
+            "plan_version": payload["plan"]["version"],
+        },
+    )
+    assert approved.status_code == 201
+
+
+def test_rendered_media_is_served_from_managed_workspace_and_cors_is_local(
+    client: TestClient,
+    media_root: Path,
+) -> None:
+    project, _asset, automatic = _create_two_candidate_review(client, media_root)
+    plan = automatic["plan"]
+    queued = client.post(
+        f"/api/v1/projects/{project['id']}/edit-plans/{plan['id']}/renders",
+        json={"preset": {"profile": "preview", "aspect_ratio": "16:9"}},
+    )
+    assert queued.status_code == 202
+
+    media = client.get(f"/api/v1/jobs/{queued.json()['id']}/media")
+    assert media.status_code == 200
+    assert media.headers["content-type"] == "video/mp4"
+    assert media.content == b"fake rendered video"
+
+    container = client.app.state.container
+    job = container.repository.get_job(UUID(queued.json()["id"]))
+    assert job is not None
+    outside = media_root / "not-a-managed-render.mp4"
+    outside.write_bytes(b"must not be served")
+    container.repository.save_job(job.model_copy(update={"output_path": outside}))
+    blocked = client.get(f"/api/v1/jobs/{queued.json()['id']}/media")
+    assert blocked.status_code == 403
+    assert blocked.json()["error_type"] == "PathNotAllowedError"
+
+    preflight = client.options(
+        "/api/v1/projects",
+        headers={
+            "Origin": "http://localhost:4173",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert preflight.status_code == 200
+    assert preflight.headers["access-control-allow-origin"] == "http://localhost:4173"

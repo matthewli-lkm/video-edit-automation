@@ -26,6 +26,7 @@ from video_edit_automation.domain.models import (
 )
 from video_edit_automation.domain.review import (
     HighlightEvaluationMetrics,
+    HighlightHumanReviewState,
     HighlightReviewDecision,
     HighlightReviewSession,
 )
@@ -111,6 +112,22 @@ class HighlightReviewSnapshotResponse(ApiModel):
     decisions: list[HighlightReviewDecision]
     latest_candidate_decisions: list[HighlightReviewDecision]
     metrics: HighlightEvaluationMetrics
+
+
+class HumanPlanRevisionRequest(ApiModel):
+    expected_plan_id: UUID
+    draft: EditPlanDraft
+
+
+class HumanPlanApprovalRequest(ApiModel):
+    plan_id: UUID
+    plan_version: int = Field(ge=1)
+
+
+class HighlightHumanReviewStateResponse(ApiModel):
+    state: HighlightHumanReviewState
+    plan: EditPlan
+    validation: PlanValidationReport
 
 
 class HighlightAgentWorkflowCreateRequest(ApiModel):
