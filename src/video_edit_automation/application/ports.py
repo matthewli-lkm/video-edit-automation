@@ -26,6 +26,7 @@ from video_edit_automation.domain.models import (
     EditPlanDraft,
     Job,
     MediaAsset,
+    MediaProxy,
     ProbedMedia,
     Project,
     RenderPreset,
@@ -64,6 +65,14 @@ class Repository(Protocol):
     def save_job(self, job: Job) -> None: ...
 
     def get_job(self, job_id: UUID) -> Job | None: ...
+
+    def list_jobs(self, project_id: UUID) -> list[Job]: ...
+
+    def save_media_proxy(self, proxy: MediaProxy) -> None: ...
+
+    def get_media_proxy(self, proxy_id: UUID) -> MediaProxy | None: ...
+
+    def list_media_proxies(self, project_id: UUID) -> list[MediaProxy]: ...
 
     def save_capture_session(self, session: CaptureSession) -> None: ...
 
@@ -125,6 +134,20 @@ class MediaGateway(Protocol):
     def available(self) -> bool: ...
 
     def probe(self, source_path: Path) -> ProbedMedia: ...
+
+    def build_proxy_command(
+        self,
+        asset: MediaAsset,
+        output_path: Path,
+        maximum_width: int,
+    ) -> list[str]: ...
+
+    def create_proxy(
+        self,
+        asset: MediaAsset,
+        output_path: Path,
+        maximum_width: int,
+    ) -> None: ...
 
     def build_render_command(
         self,

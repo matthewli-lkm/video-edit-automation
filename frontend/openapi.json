@@ -26,6 +26,71 @@
         "title": "AssetImportRequest",
         "type": "object"
       },
+      "AssetPlayback": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "format": "uuid",
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/PlaybackMode"
+          },
+          "progress": {
+            "default": 0,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Progress",
+            "type": "number"
+          },
+          "proxy_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proxy Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PlaybackStatus"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "asset_id",
+          "mode",
+          "status"
+        ],
+        "title": "AssetPlayback",
+        "type": "object"
+      },
       "AudioOutputMode": {
         "enum": [
           "source_mix",
@@ -2786,6 +2851,25 @@
         "title": "PlanWithValidation",
         "type": "object"
       },
+      "PlaybackMode": {
+        "enum": [
+          "original",
+          "proxy"
+        ],
+        "title": "PlaybackMode",
+        "type": "string"
+      },
+      "PlaybackStatus": {
+        "enum": [
+          "not_started",
+          "queued",
+          "running",
+          "ready",
+          "failed"
+        ],
+        "title": "PlaybackStatus",
+        "type": "string"
+      },
       "Project": {
         "additionalProperties": false,
         "properties": {
@@ -3277,6 +3361,39 @@
         "summary": "Get Job"
       }
     },
+    "/api/v1/jobs/{job_id}/download": {
+      "get": {
+        "operationId": "download_job_media_api_v1_jobs__job_id__download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Job Media"
+      }
+    },
     "/api/v1/jobs/{job_id}/media": {
       "get": {
         "operationId": "get_job_media_api_v1_jobs__job_id__media_get",
@@ -3663,6 +3780,149 @@
           }
         },
         "summary": "Get Asset Media"
+      }
+    },
+    "/api/v1/projects/{project_id}/assets/{asset_id}/playback": {
+      "get": {
+        "operationId": "get_asset_playback_api_v1_projects__project_id__assets__asset_id__playback_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Asset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetPlayback"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Asset Playback"
+      }
+    },
+    "/api/v1/projects/{project_id}/assets/{asset_id}/playback/media": {
+      "get": {
+        "operationId": "get_asset_playback_media_api_v1_projects__project_id__assets__asset_id__playback_media_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Asset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Asset Playback Media"
+      }
+    },
+    "/api/v1/projects/{project_id}/assets/{asset_id}/playback/prepare": {
+      "post": {
+        "operationId": "prepare_asset_playback_api_v1_projects__project_id__assets__asset_id__playback_prepare_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Asset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetPlayback"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Prepare Asset Playback"
       }
     },
     "/api/v1/projects/{project_id}/capture-sessions": {
@@ -4765,6 +5025,50 @@
           }
         },
         "summary": "Revise Highlight Plan"
+      }
+    },
+    "/api/v1/projects/{project_id}/jobs": {
+      "get": {
+        "operationId": "list_project_jobs_api_v1_projects__project_id__jobs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Job"
+                  },
+                  "title": "Response List Project Jobs Api V1 Projects  Project Id  Jobs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Project Jobs"
       }
     },
     "/healthz": {

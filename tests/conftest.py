@@ -47,6 +47,30 @@ class FakeMediaGateway:
         source_path = assets[plan.segments[0].asset_id].source_path
         return ["ffmpeg", "-i", str(source_path), str(output_path)]
 
+    def build_proxy_command(
+        self,
+        asset: MediaAsset,
+        output_path: Path,
+        maximum_width: int,
+    ) -> list[str]:
+        return [
+            "ffmpeg",
+            "-i",
+            str(asset.source_path),
+            "-vf",
+            f"scale={maximum_width}:-2",
+            str(output_path),
+        ]
+
+    def create_proxy(
+        self,
+        asset: MediaAsset,
+        output_path: Path,
+        maximum_width: int,
+    ) -> None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"fake browser-compatible proxy")
+
     def render(
         self,
         plan: EditPlan,

@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from video_edit_automation.domain.agent_workflow import HighlightAgentWorkflow
 from video_edit_automation.domain.capture import CaptureSession
 from video_edit_automation.domain.gaming import HighlightAnalysis
-from video_edit_automation.domain.models import EditPlan, Job, MediaAsset, Project
+from video_edit_automation.domain.models import EditPlan, Job, MediaAsset, MediaProxy, Project
 from video_edit_automation.domain.review import (
     HighlightHumanReviewState,
     HighlightReviewDecision,
@@ -150,6 +150,24 @@ class SQLiteRepository:
 
     def get_job(self, job_id: UUID) -> Job | None:
         return self._get("job", job_id, Job.model_validate_json)
+
+    def list_jobs(self, project_id: UUID) -> list[Job]:
+        return self._list("job", Job.model_validate_json, project_id)
+
+    def save_media_proxy(self, proxy: MediaProxy) -> None:
+        self._save(
+            "media_proxy",
+            proxy,
+            proxy.id,
+            proxy.project_id,
+            proxy.created_at.isoformat(),
+        )
+
+    def get_media_proxy(self, proxy_id: UUID) -> MediaProxy | None:
+        return self._get("media_proxy", proxy_id, MediaProxy.model_validate_json)
+
+    def list_media_proxies(self, project_id: UUID) -> list[MediaProxy]:
+        return self._list("media_proxy", MediaProxy.model_validate_json, project_id)
 
     def save_capture_session(self, session: CaptureSession) -> None:
         self._save(

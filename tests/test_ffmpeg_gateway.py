@@ -92,6 +92,23 @@ def test_command_uses_argument_list_and_typed_filter(tmp_path: Path) -> None:
     assert "scale=720:1280" in command[command.index("-filter_complex") + 1]
 
 
+def test_proxy_command_is_browser_compatible_and_uses_argument_list(tmp_path: Path) -> None:
+    project_id = uuid4()
+    suspicious_path = tmp_path / "比賽; touch never.mkv"
+    asset = _asset(project_id, suspicious_path).model_copy(
+        update={"width": 1920, "height": 1080}
+    )
+    output = tmp_path / "managed proxy.mp4"
+    command = FFmpegGateway().build_proxy_command(asset, output, maximum_width=1280)
+
+    assert command[0] == "ffmpeg"
+    assert str(suspicious_path) in command
+    assert command[command.index("-vf") + 1] == "scale=1280:720,setsar=1,format=yuv420p"
+    assert command[command.index("-c:v") + 1] == "libx264"
+    assert command[command.index("-c:a") + 1] == "aac"
+    assert command[-1] == str(output)
+
+
 def test_default_render_uses_60_fps_for_60_fps_source(tmp_path: Path) -> None:
     project_id = uuid4()
     asset = _asset(project_id, tmp_path / "60-fps.mp4").model_copy(update={"frame_rate": 59.94})
@@ -340,3 +357,59 @@ def test_real_obs_style_multitrack_recording_renders_game_audio_only(tmp_path: P
     assert output.stat().st_size > 0
     assert len(rendered.audio_tracks) == 1
     assert rendered.duration_seconds == pytest.approx(1.0, abs=0.15)
+
+
+@pytest.mark.integration
+def test_real_mkv_proxy_is_h264_aac_and_preserves_duration(tmp_path: Path) -> None:
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        pytest.skip("FFmpeg tools are not installed")
+    source = tmp_path / "比賽 recording.mkv"
+    generated = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=640x360:rate=30:duration=2",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=2",
+            "-shortest",
+            "-c:v",
+            "mpeg4",
+            "-c:a",
+            "libvorbis",
+            str(source),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        shell=False,
+    )
+    assert generated.returncode == 0, generated.stderr
+    source_before = source.read_bytes()
+
+    gateway = FFmpegGateway()
+    probed = gateway.probe(source)
+    project_id = uuid4()
+    asset = MediaAsset(
+        **probed.model_dump(),
+        project_id=project_id,
+        source_path=source,
+        source_fingerprint="proxy-integration",
+        size_bytes=source.stat().st_size,
+        modified_at_ns=source.stat().st_mtime_ns,
+    )
+    output = tmp_path / "browser proxy.mp4"
+    gateway.create_proxy(asset, output, maximum_width=320)
+    proxy = gateway.probe(output)
+
+    assert proxy.video_codec == "h264"
+    assert proxy.audio_codec == "aac"
+    assert proxy.width == 320
+    assert proxy.duration_seconds == pytest.approx(asset.duration_seconds, abs=0.15)
+    assert source.read_bytes() == source_before

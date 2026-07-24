@@ -134,7 +134,7 @@ class HighlightAgentWorkflowService:
         while workflow.state in _RUNNABLE_STATES:
             round_number = len(workflow.rounds) + 1
             plan = self.plans.get(workflow.project_id, workflow.current_plan_id)
-            job = self.renders.queue(
+            job, should_run = self.renders.queue(
                 workflow.project_id,
                 plan.id,
                 workflow.render_preset,
@@ -155,8 +155,15 @@ class HighlightAgentWorkflowService:
                 }
             )
             self.repository.save_highlight_agent_workflow(workflow)
-            self.renders.run(job.id)
+            if should_run:
+                self.renders.run(job.id)
             job = self.renders.get_job(job.id)
+            if job.status in {JobStatus.QUEUED, JobStatus.RUNNING}:
+                return self._finish_round(
+                    workflow,
+                    state=HighlightAgentWorkflowState.TECHNICAL_FAILURE,
+                    error="An identical preview render is already running",
+                )
             if job.status != JobStatus.SUCCEEDED:
                 return self._finish_round(
                     workflow,

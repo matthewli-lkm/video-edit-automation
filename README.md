@@ -32,6 +32,8 @@ This initial scaffold provides:
   version, and gates every final render;
 - project-scoped source playback and safe browser playback for backend-owned preview jobs, plus
   configurable localhost dashboard CORS;
+- managed H.264/AAC browser-preview proxies for MKV and incompatible recordings, with range
+  requests, duplicate-job protection, and restart-safe status;
 - an integrated gaming review console with whole-source/current-cut/reel previews, evidence seeking,
   trim history, versioned approval, and final-output delivery actions;
 - clock-synchronized manual bookmarks that can directly create a MOBA highlight plan;
@@ -132,6 +134,11 @@ candidate has an accept, reject, or adjust decision. YouTube publishing and dele
 Human approval is a separate authority boundary. A browser revision submits a complete typed plan,
 creates a validated version, and clears any earlier approval. Final rendering is rejected unless the
 exact current plan ID and version have active human approval; Agent 2 approval alone is insufficient.
+
+When a source is not directly browser-compatible, the backend creates one managed MP4 proxy under
+that project's `proxies/` directory. The original remains the analysis and final-render source.
+Proxy and render metadata are durable; refresh restores completed and active work, while an
+application restart marks interrupted work failed with an explicit retry path.
 
 Manual imports reference source media in place. Capture-inbox imports are copied and checksum
 verified into the Mac's project workspace before editing. Source files are never overwritten.

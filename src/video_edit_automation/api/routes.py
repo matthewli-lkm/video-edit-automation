@@ -40,12 +40,14 @@ from video_edit_automation.domain.capture import (
 from video_edit_automation.domain.errors import EntityNotFoundError
 from video_edit_automation.domain.gaming import DetectedGame, GameProfile, HighlightSignal
 from video_edit_automation.domain.models import (
+    AssetPlayback,
     EditPlan,
     Job,
     JobStatus,
     MediaAsset,
     PlanValidationReport,
     Project,
+    RenderProfile,
 )
 from video_edit_automation.domain.review import (
     HighlightReviewDecisionInput,
@@ -153,6 +155,49 @@ def list_assets(project_id: UUID, request: Request) -> list[MediaAsset]:
 def get_asset_media(project_id: UUID, asset_id: UUID, request: Request) -> FileResponse:
     source = _container(request).projects.resolve_asset_media(project_id, asset_id)
     return FileResponse(source)
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/assets/{asset_id}/playback",
+    response_model=AssetPlayback,
+)
+def get_asset_playback(
+    project_id: UUID,
+    asset_id: UUID,
+    request: Request,
+) -> AssetPlayback:
+    return _container(request).proxies.get(project_id, asset_id)
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/assets/{asset_id}/playback/prepare",
+    response_model=AssetPlayback,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def prepare_asset_playback(
+    project_id: UUID,
+    asset_id: UUID,
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> AssetPlayback:
+    container = _container(request)
+    result = container.proxies.prepare(project_id, asset_id)
+    if result.should_run and result.proxy_id is not None:
+        background_tasks.add_task(container.proxies.run, result.proxy_id)
+    return result.playback
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/assets/{asset_id}/playback/media",
+    response_class=FileResponse,
+)
+def get_asset_playback_media(
+    project_id: UUID,
+    asset_id: UUID,
+    request: Request,
+) -> FileResponse:
+    source = _container(request).proxies.resolve_media(project_id, asset_id)
+    return FileResponse(source, media_type="video/mp4")
 
 
 @router.put(
@@ -536,9 +581,15 @@ def queue_render(
     background_tasks: BackgroundTasks,
 ) -> Job:
     container = _container(request)
-    job = container.renders.queue(project_id, plan_id, payload.preset)
-    background_tasks.add_task(container.renders.run, job.id)
+    job, should_run = container.renders.queue(project_id, plan_id, payload.preset)
+    if should_run:
+        background_tasks.add_task(container.renders.run, job.id)
     return job
+
+
+@router.get("/api/v1/projects/{project_id}/jobs", response_model=list[Job])
+def list_project_jobs(project_id: UUID, request: Request) -> list[Job]:
+    return _container(request).renders.list(project_id)
 
 
 @router.get("/api/v1/jobs/{job_id}", response_model=Job)
@@ -554,3 +605,22 @@ def get_job_media(job_id: UUID, request: Request) -> FileResponse:
         raise EntityNotFoundError(f"Rendered media for job {job_id} is not available")
     output = container.workspace.resolve_render_output(job.project_id, job.output_path)
     return FileResponse(output, media_type="video/mp4")
+
+
+@router.get("/api/v1/jobs/{job_id}/download", response_class=FileResponse)
+def download_job_media(job_id: UUID, request: Request) -> FileResponse:
+    container = _container(request)
+    job = container.renders.get_job(job_id)
+    if (
+        job.status != JobStatus.SUCCEEDED
+        or job.output_path is None
+        or job.preset.profile != RenderProfile.FINAL
+    ):
+        raise EntityNotFoundError(f"Final rendered media for job {job_id} is not available")
+    output = container.workspace.resolve_render_output(job.project_id, job.output_path)
+    return FileResponse(
+        output,
+        media_type="video/mp4",
+        filename=f"cutroom-{job.id}.mp4",
+        content_disposition_type="attachment",
+    )

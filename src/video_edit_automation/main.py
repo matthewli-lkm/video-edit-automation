@@ -110,7 +110,8 @@ def create_app(
         CORSMiddleware,
         allow_origins=allowed_dashboard_origins,
         allow_methods=["GET", "POST", "PUT", "OPTIONS"],
-        allow_headers=["Content-Type"],
+        allow_headers=["Content-Type", "Range"],
+        expose_headers=["Accept-Ranges", "Content-Length", "Content-Range"],
     )
 
     @app.exception_handler(DomainError)

@@ -1,5 +1,6 @@
 from video_edit_automation.domain.models import (
     AspectRatio,
+    AssetPlayback,
     AudioOutputMode,
     AudioTrack,
     AudioTrackRole,
@@ -10,6 +11,9 @@ from video_edit_automation.domain.models import (
     Job,
     JobStatus,
     MediaAsset,
+    MediaProxy,
+    PlaybackMode,
+    PlaybackStatus,
     Project,
     RenderPreset,
     TimelineSegment,
@@ -17,6 +21,7 @@ from video_edit_automation.domain.models import (
 )
 
 __all__ = [
+    "AssetPlayback",
     "AspectRatio",
     "AudioOutputMode",
     "AudioTrack",
@@ -28,6 +33,9 @@ __all__ = [
     "Job",
     "JobStatus",
     "MediaAsset",
+    "MediaProxy",
+    "PlaybackMode",
+    "PlaybackStatus",
     "Project",
     "RenderPreset",
     "TimelineSegment",

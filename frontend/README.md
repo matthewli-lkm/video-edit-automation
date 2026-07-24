@@ -21,6 +21,11 @@ The dashboard supports a realistic demo mode, but real media import, analysis, a
 rendering use the local FastAPI service. Agent 2 is optional. Manual review and exact-version human
 approval remain available when no local reviewer model is configured.
 
+MKV and browser-incompatible recordings are reviewed through a managed H.264/AAC proxy. The
+dashboard displays preparation/retry state, restores preview and final render jobs after refresh,
+restores the selected recording, and uses the original only through project-and-asset IDs. Final
+downloads come from a backend-owned attachment route.
+
 ## Checks
 
 ```bash
