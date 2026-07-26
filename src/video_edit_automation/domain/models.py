@@ -68,6 +68,19 @@ class JobStatus(StrEnum):
     FAILED = "failed"
 
 
+class PlaybackMode(StrEnum):
+    ORIGINAL = "original"
+    PROXY = "proxy"
+
+
+class PlaybackStatus(StrEnum):
+    NOT_STARTED = "not_started"
+    QUEUED = "queued"
+    RUNNING = "running"
+    READY = "ready"
+    FAILED = "failed"
+
+
 class Project(StrictModel):
     id: UUID = Field(default_factory=uuid4)
     name: NonBlankText
@@ -213,3 +226,29 @@ class Job(StrictModel):
     updated_at: datetime = Field(default_factory=utc_now)
     started_at: datetime | None = None
     finished_at: datetime | None = None
+
+
+class MediaProxy(StrictModel):
+    id: UUID = Field(default_factory=uuid4)
+    project_id: UUID
+    asset_id: UUID
+    source_fingerprint: NonBlankText
+    maximum_width: int = Field(default=1280, ge=320, le=3840)
+    status: JobStatus = JobStatus.QUEUED
+    progress: float = Field(default=0, ge=0, le=1)
+    output_path: Path
+    error: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class AssetPlayback(StrictModel):
+    asset_id: UUID
+    mode: PlaybackMode
+    status: PlaybackStatus
+    proxy_id: UUID | None = None
+    progress: float = Field(default=0, ge=0, le=1)
+    error: str | None = None
+    updated_at: datetime | None = None

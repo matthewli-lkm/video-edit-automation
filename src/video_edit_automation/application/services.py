@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from pathlib import Path
-from uuid import UUID, uuid4
+from threading import Lock
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from video_edit_automation.application.ports import EditPlanner, MediaGateway, Repository
 from video_edit_automation.domain.errors import (
@@ -13,6 +15,7 @@ from video_edit_automation.domain.errors import (
     PlannerUnavailableError,
 )
 from video_edit_automation.domain.models import (
+    AssetPlayback,
     AudioTrackRoleAssignment,
     EditBrief,
     EditPlan,
@@ -20,7 +23,10 @@ from video_edit_automation.domain.models import (
     Job,
     JobStatus,
     MediaAsset,
+    MediaProxy,
     PlanValidationReport,
+    PlaybackMode,
+    PlaybackStatus,
     Project,
     RenderPreset,
     RenderProfile,
@@ -64,13 +70,17 @@ class ProjectService:
         self.get(project_id)
         return self.repository.list_assets(project_id)
 
-    def resolve_asset_media(self, project_id: UUID, asset_id: UUID) -> Path:
+    def get_asset(self, project_id: UUID, asset_id: UUID) -> MediaAsset:
         self.get(project_id)
         asset = self.repository.get_asset(asset_id)
         if asset is None or asset.project_id != project_id:
             raise EntityNotFoundError(
                 f"Media asset {asset_id} was not found in project {project_id}"
             )
+        return asset
+
+    def resolve_asset_media(self, project_id: UUID, asset_id: UUID) -> Path:
+        asset = self.get_asset(project_id, asset_id)
         try:
             return self.workspace.resolve_managed_import(project_id, asset.source_path)
         except PathNotAllowedError:
@@ -151,6 +161,256 @@ class ProjectService:
         )
         self.repository.save_asset(updated)
         return updated
+
+
+@dataclass(frozen=True, slots=True)
+class ProxyQueueResult:
+    playback: AssetPlayback
+    should_run: bool
+    proxy_id: UUID | None = None
+
+
+class MediaProxyService:
+    def __init__(
+        self,
+        repository: Repository,
+        media: MediaGateway,
+        projects: ProjectService,
+        workspace: WorkspaceManager,
+        maximum_width: int,
+    ) -> None:
+        self.repository = repository
+        self.media = media
+        self.projects = projects
+        self.workspace = workspace
+        self.maximum_width = maximum_width
+        self._queue_lock = Lock()
+
+    @staticmethod
+    def _requires_proxy(asset: MediaAsset) -> bool:
+        return not (
+            asset.source_path.suffix.lower() == ".mp4"
+            and asset.video_codec in {"h264", "avc1"}
+            and (not asset.has_audio or asset.audio_codec in {"aac", "mp3"})
+        )
+
+    def _matching_proxy(self, asset: MediaAsset) -> MediaProxy | None:
+        return next(
+            (
+                proxy
+                for proxy in self.repository.list_media_proxies(asset.project_id)
+                if proxy.asset_id == asset.id
+                and proxy.source_fingerprint == asset.source_fingerprint
+                and proxy.maximum_width == self.maximum_width
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _playback_status(proxy: MediaProxy) -> PlaybackStatus:
+        return {
+            JobStatus.QUEUED: PlaybackStatus.QUEUED,
+            JobStatus.RUNNING: PlaybackStatus.RUNNING,
+            JobStatus.SUCCEEDED: PlaybackStatus.READY,
+            JobStatus.FAILED: PlaybackStatus.FAILED,
+        }[proxy.status]
+
+    def get(self, project_id: UUID, asset_id: UUID) -> AssetPlayback:
+        asset = self.projects.get_asset(project_id, asset_id)
+        if not self._requires_proxy(asset):
+            return AssetPlayback(
+                asset_id=asset.id,
+                mode=PlaybackMode.ORIGINAL,
+                status=PlaybackStatus.READY,
+                progress=1,
+            )
+        proxy = self._matching_proxy(asset)
+        if proxy is None:
+            return AssetPlayback(
+                asset_id=asset.id,
+                mode=PlaybackMode.PROXY,
+                status=PlaybackStatus.NOT_STARTED,
+            )
+        if proxy.status == JobStatus.SUCCEEDED:
+            try:
+                self.workspace.resolve_proxy_output(project_id, proxy.output_path)
+            except PathNotAllowedError as exc:
+                proxy = proxy.model_copy(
+                    update={
+                        "status": JobStatus.FAILED,
+                        "error": str(exc),
+                        "finished_at": utc_now(),
+                        "updated_at": utc_now(),
+                    }
+                )
+                self.repository.save_media_proxy(proxy)
+        return AssetPlayback(
+            asset_id=asset.id,
+            mode=PlaybackMode.PROXY,
+            status=self._playback_status(proxy),
+            proxy_id=proxy.id,
+            progress=proxy.progress,
+            error=proxy.error,
+            updated_at=proxy.updated_at,
+        )
+
+    def prepare(self, project_id: UUID, asset_id: UUID) -> ProxyQueueResult:
+        with self._queue_lock:
+            asset = self.projects.get_asset(project_id, asset_id)
+            current = self.get(project_id, asset_id)
+            if current.mode == PlaybackMode.ORIGINAL or current.status in {
+                PlaybackStatus.QUEUED,
+                PlaybackStatus.RUNNING,
+                PlaybackStatus.READY,
+            }:
+                return ProxyQueueResult(playback=current, should_run=False)
+
+            proxy = (
+                self.repository.get_media_proxy(current.proxy_id)
+                if current.proxy_id is not None
+                else None
+            )
+            if proxy is None:
+                proxy_id = uuid5(
+                    NAMESPACE_URL,
+                    (
+                        "vea:browser-proxy-v1:"
+                        f"{asset.id}:{asset.source_fingerprint}:{self.maximum_width}"
+                    ),
+                )
+                proxy = MediaProxy(
+                    id=proxy_id,
+                    project_id=project_id,
+                    asset_id=asset.id,
+                    source_fingerprint=asset.source_fingerprint,
+                    maximum_width=self.maximum_width,
+                    output_path=self.workspace.proxy_output(project_id, proxy_id),
+                )
+            else:
+                proxy = proxy.model_copy(
+                    update={
+                        "status": JobStatus.QUEUED,
+                        "progress": 0,
+                        "error": None,
+                        "started_at": None,
+                        "finished_at": None,
+                        "updated_at": utc_now(),
+                    }
+                )
+            self.repository.save_media_proxy(proxy)
+            return ProxyQueueResult(
+                playback=AssetPlayback(
+                    asset_id=asset.id,
+                    mode=PlaybackMode.PROXY,
+                    status=PlaybackStatus.QUEUED,
+                    proxy_id=proxy.id,
+                    progress=proxy.progress,
+                    updated_at=proxy.updated_at,
+                ),
+                should_run=True,
+                proxy_id=proxy.id,
+            )
+
+    def run(self, proxy_id: UUID) -> None:
+        proxy = self.repository.get_media_proxy(proxy_id)
+        if proxy is None:
+            raise EntityNotFoundError(f"Media proxy {proxy_id} was not found")
+        if proxy.status != JobStatus.QUEUED:
+            return
+        running = proxy.model_copy(
+            update={
+                "status": JobStatus.RUNNING,
+                "progress": 0.05,
+                "started_at": utc_now(),
+                "updated_at": utc_now(),
+            }
+        )
+        self.repository.save_media_proxy(running)
+        try:
+            asset = self.projects.get_asset(running.project_id, running.asset_id)
+            if asset.source_fingerprint != running.source_fingerprint:
+                raise MediaToolError(
+                    "The registered source changed after this browser preview was queued"
+                )
+            source_path = self.projects.resolve_asset_media(
+                running.project_id,
+                running.asset_id,
+            )
+            source_stat = source_path.stat()
+            if (
+                source_stat.st_size != asset.size_bytes
+                or source_stat.st_mtime_ns != asset.modified_at_ns
+            ):
+                raise MediaToolError(
+                    "The source recording changed after import; re-import it before "
+                    "preparing browser playback"
+                )
+            self.media.create_proxy(
+                asset.model_copy(update={"source_path": source_path}),
+                running.output_path,
+                running.maximum_width,
+            )
+            self.workspace.resolve_proxy_output(running.project_id, running.output_path)
+        except Exception as exc:  # Background tasks must persist a terminal state.
+            failed = running.model_copy(
+                update={
+                    "status": JobStatus.FAILED,
+                    "error": str(exc)[:4_000],
+                    "finished_at": utc_now(),
+                    "updated_at": utc_now(),
+                }
+            )
+            self.repository.save_media_proxy(failed)
+            return
+        succeeded = running.model_copy(
+            update={
+                "status": JobStatus.SUCCEEDED,
+                "progress": 1,
+                "finished_at": utc_now(),
+                "updated_at": utc_now(),
+            }
+        )
+        self.repository.save_media_proxy(succeeded)
+
+    def resolve_media(self, project_id: UUID, asset_id: UUID) -> Path:
+        playback = self.get(project_id, asset_id)
+        if playback.mode == PlaybackMode.ORIGINAL:
+            return self.projects.resolve_asset_media(project_id, asset_id)
+        if (
+            playback.status != PlaybackStatus.READY
+            or playback.proxy_id is None
+        ):
+            raise EntityNotFoundError(
+                f"Browser playback for asset {asset_id} is not ready"
+            )
+        proxy = self.repository.get_media_proxy(playback.proxy_id)
+        if proxy is None:
+            raise EntityNotFoundError(
+                f"Browser preview proxy {playback.proxy_id} was not found"
+            )
+        return self.workspace.resolve_proxy_output(project_id, proxy.output_path)
+
+    def recover_interrupted(self) -> int:
+        recovered = 0
+        for project in self.repository.list_projects():
+            for proxy in self.repository.list_media_proxies(project.id):
+                if proxy.status not in {JobStatus.QUEUED, JobStatus.RUNNING}:
+                    continue
+                self.repository.save_media_proxy(
+                    proxy.model_copy(
+                        update={
+                            "status": JobStatus.FAILED,
+                            "error": (
+                                "Browser preview was interrupted when the application stopped. "
+                                "Retry preparation to continue."
+                            ),
+                            "finished_at": utc_now(),
+                            "updated_at": utc_now(),
+                        }
+                    )
+                )
+                recovered += 1
+        return recovered
 
 
 class PlanValidator:
@@ -358,6 +618,7 @@ class RenderService:
         self.media = media
         self.validator = validator
         self.workspace = workspace
+        self._queue_lock = Lock()
 
     def _load_render_context(
         self,
@@ -386,7 +647,16 @@ class RenderService:
         placeholder = self.workspace.render_output(project_id, uuid4(), preset.profile.value)
         return self.media.build_render_command(plan, assets, placeholder, preset)
 
-    def queue(self, project_id: UUID, plan_id: UUID, preset: RenderPreset) -> Job:
+    def queue(self, project_id: UUID, plan_id: UUID, preset: RenderPreset) -> tuple[Job, bool]:
+        with self._queue_lock:
+            return self._queue_unlocked(project_id, plan_id, preset)
+
+    def _queue_unlocked(
+        self,
+        project_id: UUID,
+        plan_id: UUID,
+        preset: RenderPreset,
+    ) -> tuple[Job, bool]:
         plan, _assets = self._load_render_context(project_id, plan_id)
         if preset.profile == RenderProfile.FINAL:
             approved = any(
@@ -403,7 +673,22 @@ class RenderService:
                 raise InvalidEditPlanError(
                     "Final rendering requires explicit human approval of this exact plan version"
                 )
-        job = Job(project_id=project_id, plan_id=plan_id, preset=preset)
+        for existing in self.repository.list_jobs(project_id):
+            if existing.plan_id != plan_id or existing.preset != preset:
+                continue
+            if existing.status in {JobStatus.QUEUED, JobStatus.RUNNING}:
+                return existing, False
+            if existing.status == JobStatus.SUCCEEDED and existing.output_path is not None:
+                try:
+                    self.workspace.resolve_render_output(project_id, existing.output_path)
+                except PathNotAllowedError:
+                    continue
+                return existing, False
+        job_id = uuid5(
+            NAMESPACE_URL,
+            f"vea:render-v1:{project_id}:{plan_id}:{preset.model_dump_json()}",
+        )
+        job = Job(id=job_id, project_id=project_id, plan_id=plan_id, preset=preset)
         job = job.model_copy(
             update={
                 "output_path": self.workspace.render_output(
@@ -414,10 +699,12 @@ class RenderService:
             }
         )
         self.repository.save_job(job)
-        return job
+        return job, True
 
     def run(self, job_id: UUID) -> None:
         job = self.get_job(job_id)
+        if job.status != JobStatus.QUEUED:
+            return
         running = job.model_copy(
             update={
                 "status": JobStatus.RUNNING,
@@ -459,3 +746,30 @@ class RenderService:
         if job is None:
             raise EntityNotFoundError(f"Job {job_id} was not found")
         return job
+
+    def list(self, project_id: UUID) -> list[Job]:
+        if self.repository.get_project(project_id) is None:
+            raise EntityNotFoundError(f"Project {project_id} was not found")
+        return self.repository.list_jobs(project_id)
+
+    def recover_interrupted(self) -> int:
+        recovered = 0
+        for project in self.repository.list_projects():
+            for job in self.repository.list_jobs(project.id):
+                if job.status not in {JobStatus.QUEUED, JobStatus.RUNNING}:
+                    continue
+                self.repository.save_job(
+                    job.model_copy(
+                        update={
+                            "status": JobStatus.FAILED,
+                            "error": (
+                                "Render was interrupted when the application stopped. "
+                                "Request the render again to retry."
+                            ),
+                            "finished_at": utc_now(),
+                            "updated_at": utc_now(),
+                        }
+                    )
+                )
+                recovered += 1
+        return recovered

@@ -16,6 +16,12 @@ import {
   parseTimestamp,
 } from "./time";
 import { deriveWorkflowSteps } from "./workflow";
+import {
+  playbackStatusCopy,
+  restoreAssetId,
+  restoreRenderJobs,
+  restoreWorkflow,
+} from "./reliability";
 import type { components } from "./generated/api-schema";
 
 type Mode = "demo" | "live";
@@ -108,6 +114,7 @@ type HumanReview = {
 
 type Workflow = {
   id: string;
+  review_session_id?: string;
   state:
     | "queued"
     | "rendering"
@@ -131,6 +138,7 @@ type Workflow = {
 };
 
 type RenderJob = WithId<ApiSchemas["Job"]>;
+type AssetPlayback = ApiSchemas["AssetPlayback"];
 type HealthStatus = ApiSchemas["HealthResponse"];
 
 const DEMO_CANDIDATES: Candidate[] = [
@@ -249,7 +257,9 @@ export default function Home() {
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [previewJobId, setPreviewJobId] = useState("");
+  const [previewJob, setPreviewJob] = useState<RenderJob | null>(null);
   const [finalJob, setFinalJob] = useState<RenderJob | null>(null);
+  const [playback, setPlayback] = useState<AssetPlayback | null>(null);
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("Demo workspace ready");
   const [error, setError] = useState("");
@@ -285,6 +295,7 @@ export default function Home() {
     ),
   );
   const previewRef = useRef<HTMLVideoElement>(null);
+  const playbackRequestRef = useRef(0);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -297,12 +308,14 @@ export default function Home() {
           targetDuration?: number;
           maxHighlights?: number;
           projectId?: string;
+          assetId?: string;
         };
         if (state.apiUrl) setApiUrl(state.apiUrl);
         if (state.prompt) setPrompt(state.prompt);
         if (state.targetDuration) setTargetDuration(state.targetDuration);
         if (state.maxHighlights) setMaxHighlights(state.maxHighlights);
         if (state.projectId) setProjectId(state.projectId);
+        if (state.assetId) setAssetId(state.assetId);
       } catch {
         window.localStorage.removeItem(storageKey);
       }
@@ -319,9 +332,10 @@ export default function Home() {
         targetDuration,
         maxHighlights,
         projectId,
+        assetId,
       }),
     );
-  }, [apiUrl, prompt, targetDuration, maxHighlights, projectId]);
+  }, [apiUrl, prompt, targetDuration, maxHighlights, projectId, assetId]);
 
   useEffect(() => {
     if (
@@ -358,6 +372,48 @@ export default function Home() {
     }, 1200);
     return () => window.clearInterval(timer);
   }, [apiUrl, mode, projectId, workflow]);
+
+  useEffect(() => {
+    if (mode !== "live") return;
+    const activeJobs = [previewJob, finalJob].filter(
+      (job): job is RenderJob =>
+        Boolean(job && ["queued", "running"].includes(job.status)),
+    );
+    if (!activeJobs.length) return;
+    const timer = window.setInterval(() => {
+      void Promise.all(
+        activeJobs.map((job) =>
+          requestJson<RenderJob>(apiUrl, `/api/v1/jobs/${job.id}`),
+        ),
+      )
+        .then((jobs) => {
+          for (const job of jobs) {
+            if (job.preset.profile === "preview") {
+              setPreviewJob(job);
+              if (job.status === "succeeded") setPreviewJobId(job.id);
+            } else {
+              setFinalJob(job);
+            }
+            if (job.status === "failed") {
+              setNotice(job.error ?? `${statusLabel(job.preset.profile)} render failed`);
+            }
+          }
+        })
+        .catch((nextError: unknown) =>
+          setError(
+            nextError instanceof Error
+              ? nextError.message
+              : "Render status could not be refreshed",
+          ),
+        );
+    }, 1200);
+    return () => window.clearInterval(timer);
+  }, [
+    apiUrl,
+    finalJob,
+    mode,
+    previewJob,
+  ]);
 
   const liveCandidates = useMemo<Candidate[]>(() => {
     if (!review) return [];
@@ -480,8 +536,11 @@ export default function Home() {
   );
   const boundaryWindowDuration = boundaryWindowEnd - boundaryWindowStart;
   const sourceMediaUrl =
-    mode === "live" && projectId && assetId
-      ? `${apiUrl.replace(/\/$/, "")}/api/v1/projects/${projectId}/assets/${assetId}/media`
+    mode === "live" &&
+    projectId &&
+    assetId &&
+    playback?.status === "ready"
+      ? `${apiUrl.replace(/\/$/, "")}/api/v1/projects/${projectId}/assets/${assetId}/playback/media`
       : "";
   const reelMediaUrl =
     mode === "live" &&
@@ -490,9 +549,9 @@ export default function Home() {
           finalJob?.status === "succeeded" ? finalJob.id : previewJobId
         }/media`
       : "";
-  const finalMediaUrl =
+  const finalDownloadUrl =
     mode === "live" && finalJob?.status === "succeeded"
-      ? `${apiUrl.replace(/\/$/, "")}/api/v1/jobs/${finalJob.id}/media`
+      ? `${apiUrl.replace(/\/$/, "")}/api/v1/jobs/${finalJob.id}/download`
       : "";
   const activeMediaUrl = previewMode === "reel" ? reelMediaUrl : sourceMediaUrl;
   const activeTrimHistory = selected ? trimHistory[selected.id] : undefined;
@@ -562,7 +621,7 @@ export default function Home() {
         "";
       if (nextProjectId) {
         setProjectId(nextProjectId);
-        await loadProject(nextProjectId);
+        await loadProject(nextProjectId, assetId);
       }
     } catch (nextError) {
       setConnection("failed");
@@ -574,7 +633,48 @@ export default function Home() {
     }
   }
 
+  async function preparePlayback(nextProjectId: string, nextAssetId: string) {
+    const requestId = ++playbackRequestRef.current;
+    setPlayback(null);
+    try {
+      let nextPlayback = await requestJson<AssetPlayback>(
+        apiUrl,
+        `/api/v1/projects/${nextProjectId}/assets/${nextAssetId}/playback/prepare`,
+        { method: "POST" },
+      );
+      if (requestId !== playbackRequestRef.current) return;
+      setPlayback(nextPlayback);
+      for (
+        let attempt = 0;
+        ["queued", "running"].includes(nextPlayback.status) && attempt < 300;
+        attempt += 1
+      ) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1000));
+        nextPlayback = await requestJson<AssetPlayback>(
+          apiUrl,
+          `/api/v1/projects/${nextProjectId}/assets/${nextAssetId}/playback`,
+        );
+        if (requestId !== playbackRequestRef.current) return;
+        setPlayback(nextPlayback);
+      }
+      if (nextPlayback.status === "ready") {
+        setNotice(playbackStatusCopy(nextPlayback));
+      } else if (nextPlayback.status === "failed") {
+        setNotice("Browser preview needs attention");
+      }
+    } catch (nextError) {
+      if (requestId !== playbackRequestRef.current) return;
+      setPlayback(null);
+      setError(
+        nextError instanceof Error
+          ? nextError.message
+          : "Browser playback could not be prepared",
+      );
+    }
+  }
+
   async function loadProject(nextProjectId: string, preferredAssetId?: string) {
+    playbackRequestRef.current += 1;
     setBusy("Loading project");
     setError("");
     setTrimDrafts({});
@@ -582,9 +682,11 @@ export default function Home() {
     setManualSavedTrims({});
     setPlanRevisionNeeded(false);
     setPreviewJobId("");
+    setPreviewJob(null);
     setFinalJob(null);
+    setPlayback(null);
     try {
-      const [nextAssets, reviews, plans] = await Promise.all([
+      const [nextAssets, reviews, plans, jobs, workflows] = await Promise.all([
         requestJson<Asset[]>(
           apiUrl,
           `/api/v1/projects/${nextProjectId}/assets`,
@@ -597,16 +699,23 @@ export default function Home() {
           apiUrl,
           `/api/v1/projects/${nextProjectId}/edit-plans`,
         ),
+        requestJson<RenderJob[]>(
+          apiUrl,
+          `/api/v1/projects/${nextProjectId}/jobs`,
+        ),
+        requestJson<Workflow[]>(
+          apiUrl,
+          `/api/v1/projects/${nextProjectId}/gaming/agent-workflows`,
+        ),
       ]);
-      const nextAssetId =
-        nextAssets.find((asset) => asset.id === preferredAssetId)?.id ??
-        nextAssets[0]?.id ??
-        "";
+      const nextAssetId = restoreAssetId(
+        nextAssets.map((asset) => asset.id),
+        preferredAssetId,
+      );
       setAssets(nextAssets);
       setAssetId(nextAssetId);
-      const latestReview = [...reviews]
-        .reverse()
-        .find((item) => item.asset_id === nextAssetId);
+      let restoredPlan: Plan | null = null;
+      const latestReview = reviews.find((item) => item.asset_id === nextAssetId);
       if (latestReview) {
         const snapshot = await requestJson<ReviewSnapshot>(
           apiUrl,
@@ -636,23 +745,33 @@ export default function Home() {
         );
         setHumanReview(human);
         setPlan(human.plan);
+        restoredPlan = human.plan;
       } else {
-        setPlan(
-          [...plans]
-            .reverse()
-            .find((item) =>
-              item.segments.some((segment) => segment.asset_id === nextAssetId),
-            ) ?? null,
-        );
+        restoredPlan =
+          plans.find((item) =>
+            item.segments.some((segment) => segment.asset_id === nextAssetId),
+          ) ?? null;
+        setPlan(restoredPlan);
         setReview(null);
         setHumanReview(null);
       }
-      const workflows = await requestJson<Workflow[]>(
-        apiUrl,
-        `/api/v1/projects/${nextProjectId}/gaming/agent-workflows`,
+      const restoredJobs = restoreRenderJobs(jobs, restoredPlan?.id);
+      setPreviewJob(restoredJobs.preview);
+      setPreviewJobId(
+        restoredJobs.preview?.status === "succeeded"
+          ? restoredJobs.preview.id
+          : "",
       );
-      setWorkflow(workflows.at(-1) ?? null);
-      setNotice("Project state restored");
+      setFinalJob(restoredJobs.final);
+      setWorkflow(restoreWorkflow(workflows, latestReview?.id));
+      setNotice(
+        restoredJobs.final
+          ? `Project restored · final render ${statusLabel(restoredJobs.final.status)}`
+          : "Project state restored",
+      );
+      if (nextAssetId) {
+        void preparePlayback(nextProjectId, nextAssetId);
+      }
     } catch (nextError) {
       setError(
         nextError instanceof Error
@@ -679,6 +798,10 @@ export default function Home() {
       setReview(null);
       setPlan(null);
       setHumanReview(null);
+      setPlayback(null);
+      setPreviewJob(null);
+      setPreviewJobId("");
+      setFinalJob(null);
       setNotice("Project created");
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Create failed");
@@ -707,6 +830,7 @@ export default function Home() {
       ]);
       setAssetId(asset.id);
       setNotice("Recording imported and probed");
+      void preparePlayback(projectId, asset.id);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Import failed");
     } finally {
@@ -721,6 +845,8 @@ export default function Home() {
       setTrimHistory({});
       setManualSavedTrims({});
       setPlanRevisionNeeded(false);
+      setPreviewJob(null);
+      setPreviewJobId("");
       setFinalJob(null);
       setBusy("Analysing recording");
       setTimeout(() => {
@@ -739,6 +865,8 @@ export default function Home() {
     setTrimHistory({});
     setManualSavedTrims({});
     setPlanRevisionNeeded(false);
+    setPreviewJob(null);
+    setPreviewJobId("");
     setFinalJob(null);
     try {
       const result = await requestJson<{
@@ -824,7 +952,9 @@ export default function Home() {
         }),
       },
     );
+    setPreviewJob(job);
     const completed = await waitForJob(job.id);
+    setPreviewJob(completed);
     if (completed.status === "succeeded") {
       setPreviewJobId(job.id);
       setNotice("Preview render ready");
@@ -1641,6 +1771,11 @@ export default function Home() {
                         {formatTime(asset.duration_seconds)} · {asset.width}×
                         {asset.height} · {Math.round(asset.frame_rate)} fps
                       </small>
+                      {assetId === asset.id && playback && (
+                        <small className={`playback-state ${playback.status}`}>
+                          {playbackStatusCopy(playback)}
+                        </small>
+                      )}
                     </span>
                   </button>
                 ))}
@@ -1678,7 +1813,9 @@ export default function Home() {
                   <strong>Source registered</strong>
                   <small>
                     {sourceReady
-                      ? "Path and duration verified"
+                      ? playback
+                        ? playbackStatusCopy(playback)
+                        : "Path and duration verified"
                       : "Choose a recording"}
                   </small>
                 </div>
@@ -1952,7 +2089,7 @@ export default function Home() {
                     setError(
                       previewMode === "reel"
                         ? "The rendered reel is not available for playback"
-                        : "This source format cannot be played in the browser. An MP4 preview proxy is planned for Batch 2.",
+                        : "The browser preview could not be played. Retry preparation or inspect the backend status.",
                     )
                   }
                 >
@@ -1965,16 +2102,32 @@ export default function Home() {
                   <strong>
                     {connection !== "connected"
                       ? "Connect the local backend"
-                      : !activeAsset
-                        ? "Choose or import a recording"
+                        : !activeAsset
+                          ? "Choose or import a recording"
                         : previewMode === "reel"
                           ? "Render a preview to watch the generated reel"
-                          : "Source preview unavailable"}
+                          : playback?.status === "queued" ||
+                              playback?.status === "running"
+                            ? "Preparing browser preview"
+                            : playback?.status === "failed"
+                              ? "Browser preview needs a retry"
+                              : "Source preview unavailable"}
                   </strong>
                   <small>
-                    The console never substitutes demo footage for your real
-                    project.
+                    {previewMode !== "reel" && activeAsset
+                      ? playbackStatusCopy(playback)
+                      : "The console never substitutes demo footage for your real project."}
                   </small>
+                  {previewMode !== "reel" &&
+                    activeAsset &&
+                    playback?.status === "failed" && (
+                      <button
+                        className="secondary-button"
+                        onClick={() => void preparePlayback(projectId, assetId)}
+                      >
+                        Retry browser preview
+                      </button>
+                    )}
                 </div>
               ) : (
                 <div className="demo-frame">
@@ -2604,11 +2757,10 @@ export default function Home() {
               >
                 Watch final
               </button>
-              {finalMediaUrl ? (
+              {finalDownloadUrl ? (
                 <a
                   className="secondary-button"
-                  href={finalMediaUrl}
-                  download
+                  href={finalDownloadUrl}
                 >
                   Download
                 </a>

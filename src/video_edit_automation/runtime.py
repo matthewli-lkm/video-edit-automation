@@ -18,6 +18,7 @@ from video_edit_automation.application.review import (
     HighlightReviewService,
 )
 from video_edit_automation.application.services import (
+    MediaProxyService,
     PlanService,
     PlanValidator,
     ProjectService,
@@ -45,6 +46,7 @@ class Container:
     media: MediaGateway
     workspace: WorkspaceManager
     projects: ProjectService
+    proxies: MediaProxyService
     plans: PlanService
     gaming: GamingHighlightService
     reviews: HighlightReviewService
@@ -92,11 +94,20 @@ def build_container(
     path_policy = ImportPathPolicy(settings.normalized_media_roots())
     plans = PlanService(repository, validator, planner)
     projects = ProjectService(repository, media, path_policy, workspace)
+    proxies = MediaProxyService(
+        repository,
+        media,
+        projects,
+        workspace,
+        settings.proxy_maximum_width,
+    )
     detector = RegistryGameDetector()
     gaming = GamingHighlightService(repository, plans, dict(BUILTIN_GAME_PROFILES))
     reviews = HighlightReviewService(repository)
     human_reviews = HighlightHumanReviewService(repository, plans)
     renders = RenderService(repository, media, validator, workspace)
+    proxies.recover_interrupted()
+    renders.recover_interrupted()
     if reviewer is None and settings.reviewer_enabled:
         reviewer = OpenAICompatibleHighlightReviewer(
             base_url=settings.reviewer_base_url,
@@ -136,6 +147,7 @@ def build_container(
         media=media,
         workspace=workspace,
         projects=projects,
+        proxies=proxies,
         plans=plans,
         gaming=gaming,
         reviews=reviews,

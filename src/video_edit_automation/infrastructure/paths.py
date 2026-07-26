@@ -88,6 +88,28 @@ class WorkspaceManager:
             raise RuntimeError("Resolved render output escaped the project workspace")
         return output
 
+    def proxy_output(self, project_id: UUID, proxy_id: UUID) -> Path:
+        project_root = self.ensure_project(project_id).resolve()
+        proxies_root = (project_root / "proxies").resolve()
+        output = (proxies_root / f"{proxy_id}.mp4").resolve()
+        if not output.is_relative_to(proxies_root):
+            raise RuntimeError("Resolved proxy output escaped the project workspace")
+        return output
+
+    def resolve_proxy_output(self, project_id: UUID, requested_path: Path) -> Path:
+        proxies_root = (self.ensure_project(project_id) / "proxies").resolve()
+        try:
+            resolved = requested_path.resolve(strict=True)
+        except (FileNotFoundError, OSError) as exc:
+            raise PathNotAllowedError("The browser preview proxy does not exist") from exc
+        if not resolved.is_file() or not resolved.is_relative_to(proxies_root):
+            raise PathNotAllowedError(
+                "Browser preview proxies must stay inside the project workspace"
+            )
+        if resolved.suffix.lower() != ".mp4":
+            raise UnsupportedMediaError("Browser preview proxies must be MP4 files")
+        return resolved
+
     def resolve_render_output(self, project_id: UUID, requested_path: Path) -> Path:
         renders_root = (self.ensure_project(project_id) / "renders").resolve()
         try:

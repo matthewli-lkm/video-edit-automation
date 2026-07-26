@@ -239,7 +239,23 @@ approval or final rendering. Agent 2 remains optional, and final output actions 
 successful render.
 
 Browser-compatible proxy generation, render-job restoration after application restart, and
-duplicate-job protection remain the separate G2f media-reliability milestone.
+duplicate-job protection are delivered by the separate G2f milestone below.
+
+### G2f — media and refresh reliability (implemented)
+
+Browser-incompatible recordings now receive a managed H.264/AAC MP4 proxy while the original
+remains untouched and authoritative for analysis and final rendering. The playback route supports
+HTTP byte ranges, proxy paths are revalidated inside the project workspace, and repeated
+preparation requests reuse the same asset-fingerprint-and-settings job.
+
+Render jobs can be listed per project and identical plan/preset requests reuse active or completed
+managed output. The dashboard restores the exact selected recording, newest review/workflow,
+preview/final jobs, polls active jobs, and shows proxy preparation, failure, and retry states. Final
+downloads use an attachment response owned by the backend. On application restart, queued or
+running proxy/render records become visibly recoverable failures rather than remaining stuck.
+
+Desktop process integration, a native file picker, Finder actions, dependency diagnostics, and
+installer packaging remain the separate G2g application-integration milestone.
 
 ## Milestone 6 — evaluation and learning loop
 

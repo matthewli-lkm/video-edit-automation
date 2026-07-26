@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     ffmpeg_binary: str = "ffmpeg"
     ffprobe_binary: str = "ffprobe"
     video_codec: str = "libx264"
+    proxy_maximum_width: int = Field(default=1280, ge=320, le=3840)
 
     tesseract_binary: str = "tesseract"
     gaming_analysis_audio_peak_limit: int = Field(default=18, ge=1, le=200)

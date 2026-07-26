@@ -158,6 +158,86 @@ class FFmpegGateway:
             audio_tracks=audio_tracks,
         )
 
+    def build_proxy_command(
+        self,
+        asset: MediaAsset,
+        output_path: Path,
+        maximum_width: int,
+    ) -> list[str]:
+        scale = min(1.0, maximum_width / asset.width)
+        width = _even(asset.width * scale)
+        height = _even(asset.height * scale)
+        command = [
+            self.ffmpeg_binary,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-y",
+            "-i",
+            str(asset.source_path),
+            "-map",
+            "0:v:0",
+        ]
+        if asset.has_audio:
+            command.extend(["-map", "0:a:0"])
+        command.extend(
+            [
+                "-vf",
+                f"scale={width}:{height},setsar=1,format=yuv420p",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "28",
+            ]
+        )
+        if asset.has_audio:
+            command.extend(["-c:a", "aac", "-b:a", "128k"])
+        command.extend(["-movflags", "+faststart", str(output_path)])
+        return command
+
+    def create_proxy(
+        self,
+        asset: MediaAsset,
+        output_path: Path,
+        maximum_width: int,
+    ) -> None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        command = self.build_proxy_command(asset, output_path, maximum_width)
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                shell=False,
+            )
+        except OSError as exc:
+            raise MediaToolError(f"Unable to start FFmpeg for browser preview: {exc}") from exc
+        if completed.returncode != 0:
+            detail = completed.stderr.strip()[-4_000:]
+            raise MediaToolError(f"FFmpeg browser preview failed: {detail}")
+        if not output_path.is_file() or output_path.stat().st_size == 0:
+            raise MediaToolError(
+                "FFmpeg exited successfully but did not create a usable browser preview"
+            )
+        try:
+            proxy = self.probe(output_path)
+        except MediaToolError as exc:
+            raise MediaToolError(
+                f"FFmpeg created an invalid browser preview: {exc}"
+            ) from exc
+        duration_tolerance = max(0.75, asset.duration_seconds * 0.01)
+        if abs(proxy.duration_seconds - asset.duration_seconds) > duration_tolerance:
+            raise MediaToolError(
+                "Browser preview duration does not match the registered source: "
+                f"expected {asset.duration_seconds:.3f}s, got {proxy.duration_seconds:.3f}s"
+            )
+        if proxy.video_codec != "h264" or (asset.has_audio and proxy.audio_codec != "aac"):
+            raise MediaToolError("Browser preview is not H.264/AAC compatible")
+
     @staticmethod
     def _audio_input(
         input_index: int,

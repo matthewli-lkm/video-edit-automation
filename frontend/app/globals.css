@@ -394,6 +394,18 @@ label {
   font-size: 10px;
 }
 
+.source-row .playback-state {
+  color: var(--muted);
+}
+
+.source-row .playback-state.ready {
+  color: var(--green);
+}
+
+.source-row .playback-state.failed {
+  color: var(--red);
+}
+
 .connection-panel {
   margin-bottom: 13px;
 }
@@ -821,6 +833,11 @@ h3 {
   color: var(--subtle);
   font-size: 10px;
   line-height: 1.5;
+}
+
+.empty-viewer .secondary-button {
+  justify-self: center;
+  margin-top: 6px;
 }
 
 .demo-frame {

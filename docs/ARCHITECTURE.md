@@ -142,6 +142,25 @@ Source preview is exposed only by a project-and-asset pair. The project service 
 then re-applies either managed-import containment or configured media-root containment before
 returning the file. The browser never supplies a source path to this read route.
 
+### Browser playback proxies and durable jobs
+
+An MP4 source with H.264 video and AAC/MP3 audio can be served directly. Other containers or codecs
+use a durable `MediaProxy` record. Deterministic application code—not the browser or a model—chooses
+an output inside the project's `proxies/` directory and invokes FFmpeg with an argument list to
+create H.264/AAC media with fast-start metadata. The original asset stays registered as the source
+for analysis and final rendering.
+
+Preparing the same asset fingerprint with the same proxy settings twice reuses the queued, running,
+or completed proxy. A changed source or width setting creates new managed work. Render requests
+likewise reuse an identical plan/preset job while its managed output remains valid. Project-scoped
+playback and render routes support byte ranges for seeking but never accept an output path from the
+client.
+
+Proxy and render jobs are persisted before execution. On process startup, any queued or running
+record left by the previous process is marked failed with a recoverable explanation; it is never
+reported as indefinitely active. Project job listing lets the dashboard restore active render
+progress, the latest preview, and final output after refresh or restart.
+
 ### Dashboard state
 
 The workflow stepper is derived from durable backend facts and local unsaved state. Export is not
@@ -183,9 +202,10 @@ stateDiagram-v2
     Rendered --> [*]
 ```
 
-Metadata is durable. Render jobs are executed by FastAPI background tasks in the MVP, so jobs that
-were running during a process crash must be marked failed on startup. A durable worker is justified
-only after real usage shows the need; Redis/Celery would add deployment weight too early.
+Metadata is durable. Proxy and render jobs are executed by FastAPI background tasks in the MVP.
+Jobs left queued or running by a stopped process are marked recoverably failed on startup. A
+durable worker is justified only after real usage shows the need; Redis/Celery would add deployment
+weight too early.
 
 ## Model responsibilities
 
