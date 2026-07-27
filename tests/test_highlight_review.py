@@ -46,7 +46,7 @@ class TwoPlayLeagueAnalyzer:
                     asset_id=asset.id,
                     timestamp_seconds=150,
                     signal_type=HighlightSignalType.GAME_EVENT,
-                    event_name="victory",
+                    event_name="champion_kill",
                     confidence=1,
                     source="test:ocr",
                     metadata={"raw_text": "VICTORY"},

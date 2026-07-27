@@ -12,6 +12,9 @@ __pycache__/
 .mypy_cache/
 .npm-cache/
 .uv-cache/
+.pyinstaller-cache/
+desktop/node_modules/
+desktop/release/
 htmlcov/
 dist/
 build/

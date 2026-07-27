@@ -466,7 +466,7 @@ class LeagueOcrSignalAnalyzer:
             raise MediaToolError("The v1 OCR analyser currently supports League of Legends only")
         if not self.available():
             raise AnalyzerUnavailableError(
-                "League VOD analysis requires both FFmpeg and Tesseract on the local machine"
+                "League kill detection requires both FFmpeg and Tesseract on the local machine"
             )
 
         levels = self._audio_levels(asset)

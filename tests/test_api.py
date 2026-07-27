@@ -74,6 +74,21 @@ def test_foundation_flow(client: TestClient, media_root: Path) -> None:
     assert Path(job.json()["output_path"]).is_file()
 
 
+def test_desktop_diagnostics_are_available_without_a_model(client: TestClient) -> None:
+    response = client.get("/api/v1/desktop/diagnostics")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["database"] == "ready"
+    assert payload["workspace"] == "ready"
+    assert payload["local_planner"] == "disabled"
+    assert payload["highlight_reviewer"] == "disabled"
+    assert payload["workspace_free_bytes"] > 0
+    assert payload["ffmpeg"]["status"] in {"ready", "unavailable", "error"}
+    assert payload["ffprobe"]["status"] in {"ready", "unavailable", "error"}
+    assert payload["tesseract"]["status"] in {"ready", "unavailable", "error"}
+
+
 def test_import_is_idempotent(client: TestClient, media_root: Path) -> None:
     project, first = _create_project_and_asset(client, media_root)
     second = client.post(

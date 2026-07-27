@@ -6,6 +6,7 @@ from video_edit_automation.application.agent_workflow import HighlightAgentWorkf
 from video_edit_automation.application.automatic_gaming import AutomaticGamingHighlightService
 from video_edit_automation.application.capture import CaptureSessionService
 from video_edit_automation.application.gaming import GamingHighlightService
+from video_edit_automation.application.manual_gaming import ManualGamingHighlightService
 from video_edit_automation.application.ports import (
     EditPlanner,
     HighlightReviewer,
@@ -26,6 +27,7 @@ from video_edit_automation.application.services import (
 )
 from video_edit_automation.config import Settings
 from video_edit_automation.infrastructure.capture_inbox import CaptureInboxScanner
+from video_edit_automation.infrastructure.desktop_diagnostics import DesktopDiagnosticsService
 from video_edit_automation.infrastructure.ffmpeg_gateway import FFmpegGateway
 from video_edit_automation.infrastructure.game_catalog import RegistryGameDetector
 from video_edit_automation.infrastructure.game_profiles import BUILTIN_GAME_PROFILES
@@ -55,9 +57,11 @@ class Container:
     agent_workflows: HighlightAgentWorkflowService
     signal_analyzer: HighlightSignalAnalyzer
     automatic_gaming: AutomaticGamingHighlightService
+    manual_gaming: ManualGamingHighlightService
     captures: CaptureSessionService
     capture_inbox: CaptureInboxScanner
     renders: RenderService
+    diagnostics: DesktopDiagnosticsService
 
 
 def build_container(
@@ -163,6 +167,7 @@ def build_container(
             reviews,
             workspace,
         ),
+        manual_gaming=ManualGamingHighlightService(repository, plans, reviews),
         captures=captures,
         capture_inbox=CaptureInboxScanner(
             settings.normalized_capture_inbox_roots(),
@@ -173,4 +178,5 @@ def build_container(
             automatic_scan_enabled=settings.capture_inbox_auto_scan,
         ),
         renders=renders,
+        diagnostics=DesktopDiagnosticsService(settings, repository, reviewer),
     )

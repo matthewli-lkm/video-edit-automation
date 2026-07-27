@@ -382,7 +382,7 @@ def test_real_mkv_proxy_is_h264_aac_and_preserves_duration(tmp_path: Path) -> No
             "-c:v",
             "mpeg4",
             "-c:a",
-            "libvorbis",
+            "pcm_s16le",
             str(source),
         ],
         check=False,

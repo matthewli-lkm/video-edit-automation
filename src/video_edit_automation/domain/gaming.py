@@ -127,3 +127,17 @@ class HighlightCandidate(GamingModel):
     def model_post_init(self, __context: Any) -> None:
         if self.end_seconds <= self.start_seconds:
             raise ValueError("end_seconds must be greater than start_seconds")
+
+
+class ManualHighlightClip(GamingModel):
+    title: NonBlankText
+    start_seconds: float = Field(ge=0)
+    end_seconds: float = Field(gt=0)
+
+    @property
+    def duration_seconds(self) -> float:
+        return self.end_seconds - self.start_seconds
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.end_seconds <= self.start_seconds:
+            raise ValueError("end_seconds must be greater than start_seconds")

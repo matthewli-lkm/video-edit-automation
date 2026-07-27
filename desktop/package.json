@@ -1,0 +1,74 @@
+{
+  "name": "cutroom-desktop",
+  "version": "0.3.0",
+  "description": "Local-first desktop workflow for reviewable automated video editing",
+  "author": "Matthew Li",
+  "private": true,
+  "type": "module",
+  "main": "src/main.mjs",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test tests/*.test.mjs",
+    "pack": "node scripts/build-app.mjs --dir",
+    "dist": "node scripts/build-app.mjs --dmg"
+  },
+  "devDependencies": {
+    "electron": "43.2.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.matthewli.cutroom",
+    "productName": "Cutroom",
+    "asar": true,
+    "artifactName": "Cutroom-${version}-${arch}.${ext}",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../frontend/dist",
+        "to": "frontend"
+      },
+      {
+        "from": "build/backend/video-edit-automation",
+        "to": "backend/video-edit-automation"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.video",
+      "hardenedRuntime": false,
+      "identity": "-",
+      "target": [
+        "dmg"
+      ]
+    },
+    "dmg": {
+      "backgroundColor": "#101316",
+      "iconSize": 96,
+      "window": {
+        "width": 540,
+        "height": 360
+      },
+      "contents": [
+        {
+          "x": 150,
+          "y": 180,
+          "type": "file"
+        },
+        {
+          "x": 390,
+          "y": 180,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    }
+  }
+}

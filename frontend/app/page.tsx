@@ -25,10 +25,18 @@ import {
 import type { components } from "./generated/api-schema";
 
 type Mode = "demo" | "live";
+type EditWorkflow = "manual" | "automation";
+type AiAssistance = "off" | "review" | "full";
 type Decision = "pending" | "accept" | "reject" | "adjust";
 type PreviewMode = "source" | "cut" | "reel";
 type TrimPoint = { start: number; end: number };
 type TrimHistory = { entries: TrimPoint[]; cursor: number };
+type ManualClipDraft = {
+  id: string;
+  title: string;
+  start: number;
+  end: number;
+};
 type ApiSchemas = components["schemas"];
 type WithId<T extends { id?: string }> = Omit<T, "id"> & { id: string };
 
@@ -140,6 +148,20 @@ type Workflow = {
 type RenderJob = WithId<ApiSchemas["Job"]>;
 type AssetPlayback = ApiSchemas["AssetPlayback"];
 type HealthStatus = ApiSchemas["HealthResponse"];
+type DesktopDiagnostics = ApiSchemas["DesktopDiagnosticsResponse"];
+
+type CutroomDesktopBridge = {
+  bootstrap: () => Promise<{ apiUrl: string }>;
+  selectMedia: (defaultPath?: string) => Promise<{ path: string } | null>;
+  selectFolder: () => Promise<{ path: string; name: string } | null>;
+  revealOutput: (outputPath: string) => Promise<boolean>;
+};
+
+declare global {
+  interface Window {
+    cutroomDesktop?: CutroomDesktopBridge;
+  }
+}
 
 const DEMO_CANDIDATES: Candidate[] = [
   {
@@ -149,19 +171,19 @@ const DEMO_CANDIDATES: Candidate[] = [
     start: 628.4,
     end: 655.2,
     score: 0.94,
-    signalIds: ["ocr-kill-14", "audio-peak-31"],
+    signalIds: ["ocr-kill-14", "ocr-kill-15"],
     labels: ["champion kill", "team fight"],
     decision: "accept",
   },
   {
     id: "demo-2",
     index: 1,
-    title: "Baron contest",
+    title: "Baron pit teamfight",
     start: 1014.8,
     end: 1056.6,
     score: 0.88,
-    signalIds: ["ocr-baron-04", "audio-peak-48"],
-    labels: ["objective", "reaction"],
+    signalIds: ["ocr-kill-22", "ocr-multikill-04"],
+    labels: ["multi kill", "team fight"],
     decision: "adjust",
   },
   {
@@ -178,18 +200,15 @@ const DEMO_CANDIDATES: Candidate[] = [
   {
     id: "demo-4",
     index: 3,
-    title: "Victory screen",
+    title: "Nexus cleanup",
     start: 1818.7,
     end: 1832.5,
     score: 0.71,
-    signalIds: ["ocr-victory-01"],
-    labels: ["result"],
+    signalIds: ["ocr-kill-34"],
+    labels: ["champion kill"],
     decision: "pending",
   },
 ];
-
-const DEMO_PROMPT =
-  "Create a tight League highlight focused on team fights, objective steals, and my strongest reactions. Keep the setup before each play, remove farming, and end on the result screen.";
 
 const storageKey = "vea-gaming-console-v1";
 
@@ -197,6 +216,11 @@ function formatTime(seconds: number) {
   const safe = Math.max(0, Math.round(seconds));
   const minutes = Math.floor(safe / 60);
   return `${minutes}:${String(safe % 60).padStart(2, "0")}`;
+}
+
+function formatStorage(bytes: number) {
+  if (bytes < 1024 ** 3) return `${Math.round(bytes / 1024 ** 2)} MB free`;
+  return `${(bytes / 1024 ** 3).toFixed(1)} GB free`;
 }
 
 function statusLabel(value: string) {
@@ -215,13 +239,20 @@ async function requestJson<T>(
   path: string,
   init?: RequestInit,
 ): Promise<T> {
-  const response = await fetch(`${baseUrl.replace(/\/$/, "")}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...init?.headers,
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl.replace(/\/$/, "")}${path}`, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        ...init?.headers,
+      },
+    });
+  } catch {
+    throw new Error(
+      "Cutroom lost its local connection. Wait a moment, then try again.",
+    );
+  }
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as {
       detail?: string;
@@ -233,6 +264,10 @@ async function requestJson<T>(
 
 export default function Home() {
   const [mode, setMode] = useState<Mode>("demo");
+  const [editWorkflow, setEditWorkflow] =
+    useState<EditWorkflow>("automation");
+  const [aiAssistance, setAiAssistance] =
+    useState<AiAssistance>("off");
   const [apiUrl, setApiUrl] = useState("http://127.0.0.1:8765");
   const [connection, setConnection] = useState<
     "idle" | "checking" | "connected" | "failed"
@@ -240,10 +275,13 @@ export default function Home() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
   const [projectName, setProjectName] = useState("League highlights");
+  const [projectFolders, setProjectFolders] = useState<Record<string, string>>(
+    {},
+  );
   const [assets, setAssets] = useState<Asset[]>([]);
   const [assetId, setAssetId] = useState("");
   const [sourcePath, setSourcePath] = useState("");
-  const [prompt, setPrompt] = useState(DEMO_PROMPT);
+  const [showSetup, setShowSetup] = useState(true);
   const [targetDuration, setTargetDuration] = useState(180);
   const [maxHighlights, setMaxHighlights] = useState(8);
   const [demoCandidates, setDemoCandidates] =
@@ -256,6 +294,7 @@ export default function Home() {
   const [humanReview, setHumanReview] = useState<HumanReview | null>(null);
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
   const [health, setHealth] = useState<HealthStatus | null>(null);
+  const [diagnostics, setDiagnostics] = useState<DesktopDiagnostics | null>(null);
   const [previewJobId, setPreviewJobId] = useState("");
   const [previewJob, setPreviewJob] = useState<RenderJob | null>(null);
   const [finalJob, setFinalJob] = useState<RenderJob | null>(null);
@@ -265,6 +304,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const [leftOpen, setLeftOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
+  const [desktopMode, setDesktopMode] = useState(false);
   const [previewMode, setPreviewMode] = useState<PreviewMode>("cut");
   const [boundaryDraft, setBoundaryDraft] = useState({
     start: formatTimestamp(DEMO_CANDIDATES[1].start),
@@ -280,6 +320,12 @@ export default function Home() {
   >({});
   const [missedDraft, setMissedDraft] = useState({
     event: "Missed highlight",
+    start: "",
+    end: "",
+  });
+  const [manualClips, setManualClips] = useState<ManualClipDraft[]>([]);
+  const [manualDraft, setManualDraft] = useState({
+    title: "Highlight",
     start: "",
     end: "",
   });
@@ -304,18 +350,26 @@ export default function Home() {
       try {
         const state = JSON.parse(saved) as {
           apiUrl?: string;
-          prompt?: string;
           targetDuration?: number;
           maxHighlights?: number;
           projectId?: string;
           assetId?: string;
+          projectFolders?: Record<string, string>;
+          editWorkflow?: EditWorkflow;
+          aiAssistance?: AiAssistance;
         };
-        if (state.apiUrl) setApiUrl(state.apiUrl);
-        if (state.prompt) setPrompt(state.prompt);
+        if (state.apiUrl && !window.cutroomDesktop) setApiUrl(state.apiUrl);
         if (state.targetDuration) setTargetDuration(state.targetDuration);
         if (state.maxHighlights) setMaxHighlights(state.maxHighlights);
         if (state.projectId) setProjectId(state.projectId);
         if (state.assetId) setAssetId(state.assetId);
+        if (state.projectFolders) setProjectFolders(state.projectFolders);
+        if (["manual", "automation"].includes(state.editWorkflow ?? "")) {
+          setEditWorkflow(state.editWorkflow as EditWorkflow);
+        }
+        if (["off", "review", "full"].includes(state.aiAssistance ?? "")) {
+          setAiAssistance(state.aiAssistance as AiAssistance);
+        }
       } catch {
         window.localStorage.removeItem(storageKey);
       }
@@ -324,18 +378,52 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    const bridge = window.cutroomDesktop;
+    if (!bridge) return;
+    void bridge
+      .bootstrap()
+      .then(({ apiUrl: desktopApiUrl }) => {
+        setDesktopMode(true);
+        setApiUrl(desktopApiUrl);
+        setMode("live");
+        return connect(desktopApiUrl);
+      })
+      .catch((nextError) => {
+        setConnection("failed");
+        setError(
+          nextError instanceof Error
+            ? nextError.message
+            : "The desktop backend did not start",
+        );
+      });
+    // The native bridge is immutable for the lifetime of the desktop renderer.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
     window.localStorage.setItem(
       storageKey,
       JSON.stringify({
         apiUrl,
-        prompt,
         targetDuration,
         maxHighlights,
         projectId,
         assetId,
+        projectFolders,
+        editWorkflow,
+        aiAssistance,
       }),
     );
-  }, [apiUrl, prompt, targetDuration, maxHighlights, projectId, assetId]);
+  }, [
+    aiAssistance,
+    apiUrl,
+    assetId,
+    editWorkflow,
+    maxHighlights,
+    projectFolders,
+    projectId,
+    targetDuration,
+  ]);
 
   useEffect(() => {
     if (
@@ -522,6 +610,9 @@ export default function Home() {
       ? demoApproved
       : Boolean(humanReview?.state.active_approval_id);
   const activeAsset = assets.find((asset) => asset.id === assetId);
+  const activeFolderPath =
+    Object.entries(projectFolders).find(([, id]) => id === projectId)?.[0] ??
+    "";
   const sourceDuration =
     mode === "demo"
       ? 1938
@@ -561,7 +652,8 @@ export default function Home() {
       activeTrimHistory.cursor < activeTrimHistory.entries.length - 1,
   );
   const sourceReady = mode === "demo" || Boolean(activeAsset);
-  const briefReady = Boolean(prompt.trim());
+  const briefReady =
+    editWorkflow === "automation" || manualClips.length > 0;
   const analysisReady = candidates.length > 0;
   const reviewReady =
     analysisReady &&
@@ -570,8 +662,14 @@ export default function Home() {
     !planRevisionNeeded &&
     isApproved;
   const exportReady = finalJob?.status === "succeeded";
-  const reviewerAvailable =
+  const reviewerConfigured =
     mode === "demo" || health?.highlight_reviewer === "ready";
+  const reviewerAvailable =
+    aiAssistance === "review" && reviewerConfigured;
+  const automationReady =
+    mode === "demo" || diagnostics?.tesseract.status === "ready";
+  const setupNeeded =
+    mode === "live" && connection === "connected" && showSetup;
   const workflowSteps = deriveWorkflowSteps({
     sourceReady,
     briefReady,
@@ -601,34 +699,62 @@ export default function Home() {
       )
     : 0;
 
-  async function connect() {
+  async function connect(requestedApiUrl?: string) {
+    const connectionUrl = requestedApiUrl ?? apiUrl;
+    if (requestedApiUrl) setApiUrl(requestedApiUrl);
     setConnection("checking");
     setError("");
     try {
-      const nextHealth = await requestJson<HealthStatus>(apiUrl, "/healthz");
-      const nextProjects = await requestJson<Project[]>(
-        apiUrl,
-        "/api/v1/projects",
+      const nextHealth = await requestJson<HealthStatus>(
+        connectionUrl,
+        "/healthz",
       );
+      const [nextProjects, nextDiagnostics] = await Promise.all([
+        requestJson<Project[]>(connectionUrl, "/api/v1/projects"),
+        requestJson<DesktopDiagnostics>(
+          connectionUrl,
+          "/api/v1/desktop/diagnostics",
+        ).catch(() => null),
+      ]);
       setHealth(nextHealth);
+      setDiagnostics(nextDiagnostics);
       setProjects(nextProjects);
       setConnection("connected");
       setMode("live");
       setNotice("Local backend connected");
-      const nextProjectId =
-        nextProjects.find((item) => item.id === projectId)?.id ??
-        nextProjects[0]?.id ??
-        "";
-      if (nextProjectId) {
-        setProjectId(nextProjectId);
-        await loadProject(nextProjectId, assetId);
-      }
     } catch (nextError) {
       setConnection("failed");
       setError(
         nextError instanceof Error
           ? nextError.message
           : "Could not reach the local backend",
+      );
+    }
+  }
+
+  async function chooseSource() {
+    if (!projectId) {
+      setError("Create or open a project before adding a recording");
+      return;
+    }
+    const selected = await window.cutroomDesktop?.selectMedia(
+      activeFolderPath || undefined,
+    );
+    if (!selected) return;
+    await importRecording(selected.path);
+  }
+
+  async function revealFinalOutput() {
+    if (!finalJob?.output_path || !window.cutroomDesktop) return;
+    setError("");
+    try {
+      await window.cutroomDesktop.revealOutput(String(finalJob.output_path));
+      setNotice("Final output shown in Finder");
+    } catch (nextError) {
+      setError(
+        nextError instanceof Error
+          ? nextError.message
+          : "Could not open the output folder",
       );
     }
   }
@@ -783,36 +909,87 @@ export default function Home() {
     }
   }
 
-  async function createProject(event: FormEvent) {
-    event.preventDefault();
+  function clearProjectWorkspace() {
+    setAssets([]);
+    setAssetId("");
+    setReview(null);
+    setPlan(null);
+    setHumanReview(null);
+    setPlayback(null);
+    setPreviewJob(null);
+    setPreviewJobId("");
+    setFinalJob(null);
+  }
+
+  async function createProjectRecord(name: string) {
     setBusy("Creating project");
     setError("");
     try {
       const project = await requestJson<Project>(apiUrl, "/api/v1/projects", {
         method: "POST",
-        body: JSON.stringify({ name: projectName }),
+        body: JSON.stringify({ name }),
       });
       setProjects((current) => [...current, project]);
       setProjectId(project.id);
-      setAssets([]);
-      setReview(null);
-      setPlan(null);
-      setHumanReview(null);
-      setPlayback(null);
-      setPreviewJob(null);
-      setPreviewJobId("");
-      setFinalJob(null);
-      setNotice("Project created");
+      clearProjectWorkspace();
+      return project;
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Create failed");
+      return null;
     } finally {
       setBusy("");
     }
   }
 
-  async function importSource(event: FormEvent) {
+  async function createNewProject(event: FormEvent) {
     event.preventDefault();
-    if (!projectId || !sourcePath.trim()) return;
+    const name = projectName.trim();
+    if (!name) return;
+    const project = await createProjectRecord(name);
+    if (!project) return;
+    setShowSetup(false);
+    setNotice("Project created · add a recording to begin");
+  }
+
+  async function openExistingFolder() {
+    const selected = await window.cutroomDesktop?.selectFolder();
+    if (!selected) return;
+    setError("");
+    const mappedProject = projects.find(
+      (project) => project.id === projectFolders[selected.path],
+    );
+    let nextProject = mappedProject;
+    if (!nextProject) {
+      nextProject = await createProjectRecord(selected.name);
+      if (!nextProject) return;
+      setProjectFolders((current) => ({
+        ...current,
+        [selected.path]: nextProject.id,
+      }));
+    } else {
+      setProjectId(nextProject.id);
+      await loadProject(nextProject.id);
+    }
+    setShowSetup(false);
+    setNotice(
+      mappedProject
+        ? `Opened ${mappedProject.name}`
+        : `Video folder ready · add a recording to begin`,
+    );
+  }
+
+  async function openExistingWebProject(event: FormEvent) {
+    event.preventDefault();
+    if (!projectId) {
+      setError("Choose an existing project first");
+      return;
+    }
+    await loadProject(projectId);
+    setShowSetup(false);
+    setNotice("Project opened");
+  }
+
+  async function importRecording(localPath: string) {
     setBusy("Importing source");
     setError("");
     try {
@@ -821,7 +998,7 @@ export default function Home() {
         `/api/v1/projects/${projectId}/assets/import`,
         {
           method: "POST",
-          body: JSON.stringify({ local_path: sourcePath.trim() }),
+          body: JSON.stringify({ local_path: localPath.trim() }),
         },
       );
       setAssets((current) => [
@@ -829,10 +1006,165 @@ export default function Home() {
         asset,
       ]);
       setAssetId(asset.id);
+      setSourcePath("");
       setNotice("Recording imported and probed");
       void preparePlayback(projectId, asset.id);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Import failed");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  function addManualClip(event: FormEvent) {
+    event.preventDefault();
+    const start = parseTimestamp(manualDraft.start);
+    const end = parseTimestamp(manualDraft.end);
+    if (start === null || end === null || end <= start) {
+      setError("Enter a valid In and Out time; Out must be after In");
+      return;
+    }
+    if (end > sourceDuration) {
+      setError("The manual clip cannot end after the recording");
+      return;
+    }
+    if (
+      manualClips.some(
+        (clip) => start < clip.end && end > clip.start,
+      )
+    ) {
+      setError("Manual clips cannot overlap");
+      return;
+    }
+    setError("");
+    setManualClips((current) =>
+      [
+        ...current,
+        {
+          id: crypto.randomUUID(),
+          title: manualDraft.title.trim() || `Highlight ${current.length + 1}`,
+          start,
+          end,
+        },
+      ].sort((left, right) => left.start - right.start),
+    );
+    setManualDraft({
+      title: `Highlight ${manualClips.length + 2}`,
+      start: "",
+      end: "",
+    });
+    setNotice("Manual clip added to the first cut");
+  }
+
+  async function loadCreatedPlan(
+    result: {
+      plan: Plan;
+      review_session: ReviewSnapshot["session"];
+    },
+    completeCopy: (count: number) => string,
+  ) {
+    setPlan(result.plan);
+    const snapshot = await requestJson<ReviewSnapshot>(
+      apiUrl,
+      `/api/v1/projects/${projectId}/gaming/highlight-reviews/${result.review_session.id}`,
+    );
+    setReview(snapshot);
+    const firstCandidate = snapshot.session.candidates[0];
+    setSelectedId(firstCandidate?.id ?? "");
+    if (firstCandidate) {
+      setBoundaryDraft({
+        start: formatTimestamp(firstCandidate.start_seconds),
+        end: formatTimestamp(firstCandidate.end_seconds),
+      });
+      setBoundaryWindow(
+        createBoundaryWindow(
+          firstCandidate.start_seconds,
+          firstCandidate.end_seconds,
+          activeAsset?.duration_seconds ?? firstCandidate.end_seconds + 30,
+        ),
+      );
+      setPlayheadSeconds(firstCandidate.start_seconds);
+    }
+    const human = await requestJson<HumanReview>(
+      apiUrl,
+      `/api/v1/projects/${projectId}/gaming/highlight-reviews/${result.review_session.id}/human-review`,
+    );
+    setHumanReview(human);
+    setNotice(completeCopy(snapshot.metrics.candidate_count));
+    await renderPreview(result.plan.id);
+  }
+
+  async function createManualFirstCut() {
+    if (!manualClips.length) {
+      setError("Add at least one manual clip first");
+      return;
+    }
+    setDemoApproved(false);
+    setTrimDrafts({});
+    setTrimHistory({});
+    setManualSavedTrims({});
+    setPlanRevisionNeeded(false);
+    setPreviewJob(null);
+    setPreviewJobId("");
+    setFinalJob(null);
+    if (mode === "demo") {
+      setDemoCandidates(
+        manualClips.map((clip, index) => ({
+          id: `demo-manual-${clip.id}`,
+          index,
+          title: clip.title,
+          start: clip.start,
+          end: clip.end,
+          score: 1,
+          signalIds: [`demo-manual-marker-${index + 1}`],
+          labels: ["manual selection"],
+          decision: "pending",
+        })),
+      );
+      setSelectedId(`demo-manual-${manualClips[0].id}`);
+      setNotice(`Manual first cut ready · ${manualClips.length} clips`);
+      return;
+    }
+    if (!projectId || !assetId) {
+      setError("Choose a project and recording first");
+      return;
+    }
+    setBusy("Creating manual first cut");
+    setError("");
+    try {
+      const result = await requestJson<{
+        plan: Plan;
+        review_session: ReviewSnapshot["session"];
+      }>(
+        apiUrl,
+        `/api/v1/projects/${projectId}/assets/${assetId}/gaming/manual-highlight-plans`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            brief: {
+              objective: "Keep the manually selected clips",
+              editing_profile: "gameplay_highlights",
+              aspect_ratio: "16:9",
+              style: "Exact human-selected gaming highlights",
+            },
+            clips: manualClips.map((clip) => ({
+              title: clip.title,
+              start_seconds: clip.start,
+              end_seconds: clip.end,
+            })),
+          }),
+        },
+      );
+      await loadCreatedPlan(
+        result,
+        (count) => `Manual first cut ready · ${count} clips`,
+      );
+    } catch (nextError) {
+      setError(
+        nextError instanceof Error
+          ? nextError.message
+          : "Manual first cut failed",
+      );
     } finally {
       setBusy("");
     }
@@ -859,6 +1191,12 @@ export default function Home() {
       setError("Choose a project and recording first");
       return;
     }
+    if (!automationReady) {
+      setError(
+        "Kill & teamfight detection needs Tesseract OCR. Use Manual mode until it is available.",
+      );
+      return;
+    }
     setBusy("Analysing recording");
     setError("");
     setTrimDrafts({});
@@ -879,48 +1217,23 @@ export default function Home() {
           method: "POST",
           body: JSON.stringify({
             brief: {
-              objective: prompt,
+              objective: "Detect League kills and combine nearby kills into teamfight clips",
               editing_profile: "gameplay_highlights",
               target_duration_seconds: targetDuration,
               aspect_ratio: "16:9",
-              style: "Tight, evidence-backed gaming highlight",
+              style: "Kill and teamfight clips",
               additional_instructions:
-                "Retain setup before important plays and remove downtime. Treat the duration as a maximum; a shorter valid edit is acceptable.",
+                "Keep setup before each detected fight and combine nearby kills. Treat the duration as a maximum; a shorter valid edit is acceptable.",
             },
             game_id: "league_of_legends",
             max_highlights: maxHighlights,
           }),
         },
       );
-      setPlan(result.plan);
-      const snapshot = await requestJson<ReviewSnapshot>(
-        apiUrl,
-        `/api/v1/projects/${projectId}/gaming/highlight-reviews/${result.review_session.id}`,
+      await loadCreatedPlan(
+        result,
+        (count) => `Automation complete · ${count} clips proposed`,
       );
-      setReview(snapshot);
-      const firstCandidate = snapshot.session.candidates[0];
-      setSelectedId(firstCandidate?.id ?? "");
-      if (firstCandidate) {
-        setBoundaryDraft({
-          start: formatTimestamp(firstCandidate.start_seconds),
-          end: formatTimestamp(firstCandidate.end_seconds),
-        });
-        setBoundaryWindow(
-          createBoundaryWindow(
-            firstCandidate.start_seconds,
-            firstCandidate.end_seconds,
-            activeAsset?.duration_seconds ?? firstCandidate.end_seconds + 30,
-          ),
-        );
-        setPlayheadSeconds(firstCandidate.start_seconds);
-      }
-      const human = await requestJson<HumanReview>(
-        apiUrl,
-        `/api/v1/projects/${projectId}/gaming/highlight-reviews/${result.review_session.id}/human-review`,
-      );
-      setHumanReview(human);
-      setNotice(`Analysis complete · ${snapshot.metrics.candidate_count} clips proposed`);
-      await renderPreview(result.plan.id);
     } catch (nextError) {
       setError(
         nextError instanceof Error ? nextError.message : "Analysis failed",
@@ -1439,9 +1752,13 @@ export default function Home() {
   }
 
   async function startReviewer() {
+    if (aiAssistance === "off") {
+      setError("Turn AI assistance to Review before starting Agent 2");
+      return;
+    }
     if (!reviewerAvailable) {
       setError(
-        "Agent 2 is optional and not configured. You can continue with manual review and approval.",
+        "Review mode is saved, but a local reviewer model is not configured yet. Manual review and approval still work.",
       );
       return;
     }
@@ -1655,24 +1972,141 @@ export default function Home() {
         </div>
       </header>
 
-      <div className="workspace">
+      {setupNeeded && (
+        <section className="setup-screen" aria-labelledby="setup-title">
+          <div className="setup-orbit setup-orbit-one" aria-hidden="true" />
+          <div className="setup-orbit setup-orbit-two" aria-hidden="true" />
+          <div className="setup-card">
+            <div className="setup-intro">
+              <span className="eyebrow">Welcome to Cutroom</span>
+              <h1 id="setup-title">Where would you like to begin?</h1>
+              <p>
+                Start a fresh clips project or reopen a video folder you have
+                used before. Recordings are added after you enter the editor.
+              </p>
+            </div>
+            <div className="setup-choices">
+              <form
+                className="setup-choice-card create"
+                onSubmit={createNewProject}
+              >
+                <span className="setup-choice-icon" aria-hidden="true">
+                  +
+                </span>
+                <div>
+                  <span className="setup-choice-kicker">Start fresh</span>
+                  <h2>Create new project</h2>
+                  <p>
+                    Cutroom creates a protected workspace for previews and
+                    finished clips. Add your first recording inside.
+                  </p>
+                </div>
+                <label>
+                  Project name
+                  <input
+                    value={projectName}
+                    onChange={(event) => setProjectName(event.target.value)}
+                    placeholder="League highlights"
+                  />
+                </label>
+                <button
+                  className="primary-button"
+                  disabled={!projectName.trim() || Boolean(busy)}
+                >
+                  {busy === "Creating project"
+                    ? "Creating…"
+                    : "Create & enter"}
+                </button>
+              </form>
+
+              <form
+                className="setup-choice-card existing"
+                onSubmit={
+                  desktopMode
+                    ? (event) => {
+                        event.preventDefault();
+                        void openExistingFolder();
+                      }
+                    : openExistingWebProject
+                }
+              >
+                <span className="setup-choice-icon" aria-hidden="true">
+                  ↗
+                </span>
+                <div>
+                  <span className="setup-choice-kicker">Continue editing</span>
+                  <h2>Open existing video folder</h2>
+                  <p>
+                    Choose its folder in Finder. Cutroom will reopen the linked
+                    project or prepare that folder for editing.
+                  </p>
+                </div>
+                {!desktopMode && (
+                  <label>
+                    Existing project
+                    <select
+                      value={projectId}
+                      onChange={(event) => setProjectId(event.target.value)}
+                    >
+                      <option value="">Choose a project</option>
+                      {projects.map((project) => (
+                        <option value={project.id} key={project.id}>
+                          {project.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                <button
+                  className="secondary-button"
+                  disabled={
+                    Boolean(busy) || (!desktopMode && !projectId)
+                  }
+                >
+                  {busy === "Loading project"
+                    ? "Opening…"
+                    : desktopMode
+                      ? "Choose folder in Finder"
+                      : "Open project"}
+                </button>
+              </form>
+            </div>
+            <p className="setup-footnote">
+              Original recordings are never changed or deleted.
+            </p>
+            {error && (
+              <div className="setup-error" role="alert">
+                {error}
+                <button type="button" onClick={() => setError("")}>
+                  Dismiss
+                </button>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+
+      <div className={`workspace ${setupNeeded ? "setup-hidden" : ""}`}>
         <aside className={`left-rail ${leftOpen ? "open" : ""}`}>
           <section className="rail-section">
             <div className="section-heading">
               <span>Workspace</span>
-              <button
-                className="text-button"
-                onClick={() => {
-                  setMode(mode === "demo" ? "live" : "demo");
-                  setLeftOpen(false);
-                }}
-              >
-                {mode === "demo" ? "Use backend" : "Use demo"}
-              </button>
+              {!desktopMode && (
+                <button
+                  className="text-button"
+                  onClick={() => {
+                    setMode(mode === "demo" ? "live" : "demo");
+                    setLeftOpen(false);
+                  }}
+                >
+                  {mode === "demo" ? "Use backend" : "Use demo"}
+                </button>
+              )}
             </div>
 
             {mode === "live" ? (
-              <div className="connection-panel">
+              !desktopMode && (
+                <div className="connection-panel">
                 <label htmlFor="api-url">Backend address</label>
                 <div className="inline-field">
                   <input
@@ -1681,11 +2115,15 @@ export default function Home() {
                     onChange={(event) => setApiUrl(event.target.value)}
                     spellCheck={false}
                   />
-                  <button onClick={connect} disabled={connection === "checking"}>
+                  <button
+                    onClick={() => void connect()}
+                    disabled={connection === "checking"}
+                  >
                     {connection === "checking" ? "…" : "Connect"}
                   </button>
                 </div>
               </div>
+              )
             ) : (
               <button
                 className="project-card selected"
@@ -1702,43 +2140,27 @@ export default function Home() {
             )}
 
             {mode === "live" && connection === "connected" && (
-              <>
-                <label className="field-label" htmlFor="project-select">
-                  Project
-                </label>
-                <select
-                  id="project-select"
-                  value={projectId}
-                  onChange={(event) => {
-                    setProjectId(event.target.value);
-                    void loadProject(event.target.value);
-                  }}
-                >
-                  <option value="">Choose project</option>
-                  {projects.map((project) => (
-                    <option value={project.id} key={project.id}>
-                      {project.name}
-                    </option>
-                  ))}
-                </select>
-                <form className="compact-form" onSubmit={createProject}>
-                  <label htmlFor="project-name">New project</label>
-                  <div className="inline-field">
-                    <input
-                      id="project-name"
-                      value={projectName}
-                      onChange={(event) => setProjectName(event.target.value)}
-                    />
-                    <button disabled={!projectName.trim()}>Create</button>
-                  </div>
-                </form>
-              </>
+              <button
+                className="project-card selected"
+                onClick={() => setShowSetup(true)}
+              >
+                <span className="project-thumb" aria-hidden="true">
+                  {activeAsset ? formatTime(activeAsset.duration_seconds) : "NEW"}
+                </span>
+                <span>
+                  <strong>
+                    {projects.find((project) => project.id === projectId)?.name ??
+                      "Clips project"}
+                  </strong>
+                  <small>Switch or create project</small>
+                </span>
+              </button>
             )}
           </section>
 
           <section className="rail-section source-section">
             <div className="section-heading">
-              <span>Source</span>
+              <span>Recordings</span>
               <span className="count">{mode === "demo" ? 1 : assets.length}</span>
             </div>
             {mode === "demo" ? (
@@ -1753,6 +2175,49 @@ export default function Home() {
               </button>
             ) : (
               <>
+                <button
+                  className="add-recording-button"
+                  onClick={() => void chooseSource()}
+                  disabled={Boolean(busy)}
+                >
+                  <span aria-hidden="true">+</span>
+                  <span>
+                    <strong>
+                      {assets.length ? "Add another recording" : "Add recording"}
+                    </strong>
+                    <small>MKV, MP4, MOV, AVI, or WebM</small>
+                  </span>
+                </button>
+                {!desktopMode && (
+                  <form
+                    className="path-import"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      if (sourcePath.trim()) {
+                        void importRecording(sourcePath);
+                      }
+                    }}
+                  >
+                    <input
+                      aria-label="Recording path"
+                      placeholder="/Users/you/Movies/game.mkv"
+                      value={sourcePath}
+                      onChange={(event) => setSourcePath(event.target.value)}
+                    />
+                    <button disabled={!sourcePath.trim() || Boolean(busy)}>
+                      Import
+                    </button>
+                  </form>
+                )}
+                {!assets.length && (
+                  <div className="empty-source">
+                    <span aria-hidden="true">VIDEO</span>
+                    <strong>Upload a recording to begin</strong>
+                    <small>
+                      Choose an existing clip or add a full gameplay recording.
+                    </small>
+                  </div>
+                )}
                 {assets.map((asset) => (
                   <button
                     key={asset.id}
@@ -1779,25 +2244,6 @@ export default function Home() {
                     </span>
                   </button>
                 ))}
-                <form className="compact-form" onSubmit={importSource}>
-                  <label htmlFor="source-path">Import local recording</label>
-                  <input
-                    id="source-path"
-                    placeholder="/Users/matthew/Movies/game.mkv"
-                    value={sourcePath}
-                    onChange={(event) => setSourcePath(event.target.value)}
-                    spellCheck={false}
-                  />
-                  <button
-                    className="secondary-button"
-                    disabled={!projectId || !sourcePath.trim()}
-                  >
-                    Import from allowed folder
-                  </button>
-                  <small>
-                    The backend checks the path against configured media roots.
-                  </small>
-                </form>
               </>
             )}
           </section>
@@ -1823,8 +2269,16 @@ export default function Home() {
               <li className={candidates.length ? "done" : ""}>
                 <span />
                 <div>
-                  <strong>Evidence analysed</strong>
-                  <small>OCR + audio candidate scoring</small>
+                  <strong>
+                    {editWorkflow === "automation"
+                      ? "Evidence analysed"
+                      : "Manual first cut"}
+                  </strong>
+                  <small>
+                    {editWorkflow === "automation"
+                      ? "Kill OCR + teamfight merging"
+                      : "Exact ranges chosen by you"}
+                  </small>
                 </div>
               </li>
               <li
@@ -1842,11 +2296,13 @@ export default function Home() {
                 <div>
                   <strong>Independent review · optional</strong>
                   <small>
-                    {!reviewerAvailable
-                      ? "Reviewer not configured"
+                    {aiAssistance === "off"
+                      ? "AI assistance off"
+                      : !reviewerConfigured
+                        ? "Local reviewer not configured"
                       : workflow
-                      ? statusLabel(workflow.state)
-                      : "Waiting for reviewer"}
+                        ? statusLabel(workflow.state)
+                        : "Ready after preview"}
                   </small>
                 </div>
               </li>
@@ -1878,13 +2334,69 @@ export default function Home() {
               </li>
             </ol>
           </section>
+
+          {mode === "live" && diagnostics && (
+            <section className="rail-section diagnostics-section">
+              <div className="section-heading">
+                <span>System check</span>
+                <span className={`diagnostic-summary ${diagnostics.status}`}>
+                  {diagnostics.status}
+                </span>
+              </div>
+              <ul className="diagnostic-list">
+                {[
+                  {
+                    label: "Database",
+                    status: diagnostics.database,
+                    detail: "Project history",
+                  },
+                  {
+                    label: "Workspace",
+                    status: diagnostics.workspace,
+                    detail: formatStorage(diagnostics.workspace_free_bytes),
+                  },
+                  {
+                    label: diagnostics.ffmpeg.name,
+                    status: diagnostics.ffmpeg.status,
+                    detail: diagnostics.ffmpeg.version ?? "Required for rendering",
+                  },
+                  {
+                    label: diagnostics.ffprobe.name,
+                    status: diagnostics.ffprobe.status,
+                    detail: diagnostics.ffprobe.version ?? "Required for imports",
+                  },
+                  {
+                    label: diagnostics.tesseract.name,
+                    status: diagnostics.tesseract.status,
+                    detail:
+                      diagnostics.tesseract.version ??
+                      "Needed for Kill & teamfight detection",
+                  },
+                ].map((item) => (
+                  <li key={item.label}>
+                    <span className={item.status} aria-hidden="true" />
+                    <div>
+                      <strong>{item.label}</strong>
+                      <small>{item.detail}</small>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
         </aside>
 
         <section className="editor">
           <div className="editor-header">
             <div>
               <span className="eyebrow">League of Legends · Gameplay highlights</span>
-              <h1>{plan?.title ?? "Ranked session 24"}</h1>
+              <h1>
+                {plan?.title ??
+                  (mode === "live"
+                    ? projects.find((project) => project.id === projectId)
+                        ?.name ?? "New clips project"
+                    : "Ranked session 24")}
+              </h1>
             </div>
             <div className="plan-meta">
               <span>
@@ -1913,96 +2425,321 @@ export default function Home() {
             </div>
           </div>
 
-          <section className="brief-panel" aria-labelledby="brief-title">
-            <div className="brief-heading">
+          {mode === "live" && !activeAsset && (
+            <section className="empty-project-callout" aria-labelledby="empty-project-title">
+              <span className="empty-project-icon" aria-hidden="true">
+                ▶
+              </span>
               <div>
-                <span className="eyebrow">Editing brief</span>
-                <h2 id="brief-title">Tell the editor what matters</h2>
+                <span className="eyebrow">Project ready</span>
+                <h2 id="empty-project-title">Upload a recording to begin</h2>
+                <p>
+                  Choose an existing video clip or a full gameplay recording.
+                  Your original file stays untouched.
+                </p>
               </div>
               <button
                 className="primary-button"
-                onClick={runAnalysis}
+                onClick={() => void chooseSource()}
                 disabled={Boolean(busy)}
               >
-                {busy === "Analysing recording" ? "Analysing…" : "Run analysis"}
+                {busy === "Importing source" ? "Importing…" : "Choose recording"}
+              </button>
+            </section>
+          )}
+
+          <section className="workflow-panel" aria-labelledby="workflow-mode-title">
+            <div className="workflow-panel-heading">
+              <div>
+                <span className="eyebrow">Workflow setup</span>
+                <h2 id="workflow-mode-title">Choose how the first cut is made</h2>
+              </div>
+              <span className="saved-setting">Saved on this Mac</span>
+            </div>
+            <div className="workflow-choice-grid">
+              <button
+                className={editWorkflow === "manual" ? "selected" : ""}
+                onClick={() => setEditWorkflow("manual")}
+                aria-pressed={editWorkflow === "manual"}
+              >
+                <strong>Manual</strong>
+                <span>You choose exact In and Out times. No detector or AI needed.</span>
+              </button>
+              <button
+                className={editWorkflow === "automation" ? "selected" : ""}
+                onClick={() => setEditWorkflow("automation")}
+                aria-pressed={editWorkflow === "automation"}
+              >
+                <strong>Kill &amp; teamfight detection</strong>
+                <span>Find visible League kills and merge nearby kills. No LLM.</span>
               </button>
             </div>
-            <label htmlFor="editing-prompt" className="sr-only">
-              Editing instructions
-            </label>
-            <textarea
-              id="editing-prompt"
-              value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
-              rows={3}
-            />
-            <div className="brief-controls">
-              <div className="duration-control">
-                <span className="control-label">Max duration</span>
-                <div className="duration-inputs">
-                  <label>
-                    <span className="sr-only">Maximum minutes</span>
-                    <input
-                      type="number"
-                      min={0}
-                      max={30}
-                      value={maximumMinutes}
-                      onChange={(event) =>
-                        updateMaximumDuration(
-                          "minutes",
-                          Number(event.target.value),
-                        )
-                      }
-                      aria-label="Maximum minutes"
-                    />
-                    <small>min</small>
-                  </label>
-                  <span className="duration-separator">:</span>
-                  <label>
-                    <span className="sr-only">Maximum seconds</span>
-                  <input
-                    type="number"
-                      min={0}
-                      max={59}
-                      value={maximumSeconds}
-                    onChange={(event) =>
-                        updateMaximumDuration(
-                          "seconds",
-                          Number(event.target.value),
-                        )
-                    }
-                      aria-label="Maximum seconds"
-                  />
-                    <small>sec</small>
-                  </label>
-                </div>
-                <small className="duration-help">
-                  Upper limit · shorter valid reels still continue
+            <div className="ai-setting">
+              <div>
+                <strong>AI assistance</strong>
+                <small>
+                  Separate from kill detection. Rendering and detection never send a text prompt.
                 </small>
               </div>
-              <label>
-                Max clips
-                <input
-                  type="number"
-                  min={1}
-                  max={100}
-                  value={maxHighlights}
-                  onChange={(event) =>
-                    setMaxHighlights(Number(event.target.value))
-                  }
-                />
-              </label>
-              <label>
-                Format
-                <select defaultValue="16:9">
-                  <option>16:9</option>
-                  <option disabled>9:16 · later milestone</option>
-                </select>
-              </label>
-              <span className="safety-note">
-                Publishing and source deletion are disabled
-              </span>
+              <div className="ai-options" role="group" aria-label="AI assistance">
+                <button
+                  className={aiAssistance === "off" ? "selected" : ""}
+                  onClick={() => setAiAssistance("off")}
+                  aria-pressed={aiAssistance === "off"}
+                >
+                  Off
+                </button>
+                <button
+                  className={aiAssistance === "review" ? "selected" : ""}
+                  onClick={() => setAiAssistance("review")}
+                  aria-pressed={aiAssistance === "review"}
+                >
+                  Review
+                </button>
+                <button disabled title="Full local-model editing will be added later">
+                  Full · later
+                </button>
+              </div>
+              <small className="ai-setting-status">
+                {aiAssistance === "off"
+                  ? "No model will be called."
+                  : reviewerConfigured
+                    ? "Independent AI review is ready after preview rendering."
+                    : "Review mode is saved, but no local reviewer model is configured yet."}
+              </small>
             </div>
+          </section>
+
+          <section className="brief-panel" aria-labelledby="brief-title">
+            <div className="brief-heading">
+              <div>
+                <span className="eyebrow">
+                  {editWorkflow === "automation"
+                    ? "Deterministic automation"
+                    : "Manual first cut"}
+                </span>
+                <h2 id="brief-title">
+                  {editWorkflow === "automation"
+                    ? "Kill & teamfight detection"
+                    : "Add the exact moments you want to keep"}
+                </h2>
+              </div>
+              <button
+                className="primary-button"
+                onClick={
+                  editWorkflow === "automation"
+                    ? runAnalysis
+                    : createManualFirstCut
+                }
+                disabled={
+                  Boolean(busy) ||
+                  !sourceReady ||
+                  (editWorkflow === "manual" && manualClips.length === 0) ||
+                  (editWorkflow === "automation" && !automationReady)
+                }
+              >
+                {editWorkflow === "automation"
+                  ? busy === "Analysing recording"
+                    ? "Analysing…"
+                    : "Detect kills & teamfights"
+                  : busy === "Creating manual first cut"
+                    ? "Creating…"
+                    : "Create manual first cut"}
+              </button>
+            </div>
+            {editWorkflow === "automation" ? (
+              <>
+                <div className="detector-summary">
+                  <div>
+                    <span className="detector-icon">K</span>
+                    <strong>Champion kills</strong>
+                    <small>Reads visible League kill announcements</small>
+                  </div>
+                  <div>
+                    <span className="detector-icon">×2</span>
+                    <strong>Multi-kills</strong>
+                    <small>Prioritises double, triple, quadra, and penta kills</small>
+                  </div>
+                  <div>
+                    <span className="detector-icon">TF</span>
+                    <strong>Teamfights</strong>
+                    <small>Nearby kills are combined into one continuous clip</small>
+                  </div>
+                </div>
+                {!automationReady && (
+                  <div className="automation-requirement" role="status">
+                    <strong>Kill detection needs Tesseract OCR.</strong>
+                    <span>
+                      Manual mode is available now. Batch 4 can bundle this
+                      detector so viewers do not install it separately.
+                    </span>
+                  </div>
+                )}
+                <div className="brief-controls">
+                  <div className="duration-control">
+                    <span className="control-label">Max duration</span>
+                    <div className="duration-inputs">
+                      <label>
+                        <span className="sr-only">Maximum minutes</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={30}
+                          value={maximumMinutes}
+                          onChange={(event) =>
+                            updateMaximumDuration(
+                              "minutes",
+                              Number(event.target.value),
+                            )
+                          }
+                          aria-label="Maximum minutes"
+                        />
+                        <small>min</small>
+                      </label>
+                      <span className="duration-separator">:</span>
+                      <label>
+                        <span className="sr-only">Maximum seconds</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={59}
+                          value={maximumSeconds}
+                          onChange={(event) =>
+                            updateMaximumDuration(
+                              "seconds",
+                              Number(event.target.value),
+                            )
+                          }
+                          aria-label="Maximum seconds"
+                        />
+                        <small>sec</small>
+                      </label>
+                    </div>
+                    <small className="duration-help">
+                      Upper limit · shorter valid reels still continue
+                    </small>
+                  </div>
+                  <label>
+                    Max clips
+                    <input
+                      type="number"
+                      min={1}
+                      max={100}
+                      value={maxHighlights}
+                      onChange={(event) =>
+                        setMaxHighlights(Number(event.target.value))
+                      }
+                    />
+                  </label>
+                  <label>
+                    Format
+                    <select defaultValue="16:9">
+                      <option>16:9</option>
+                      <option disabled>9:16 · later milestone</option>
+                    </select>
+                  </label>
+                  <span className="safety-note">
+                    Publishing and source deletion are disabled
+                  </span>
+                </div>
+              </>
+            ) : (
+              <>
+                <form className="manual-clip-form" onSubmit={addManualClip}>
+                  <label>
+                    Clip name
+                    <input
+                      value={manualDraft.title}
+                      onChange={(event) =>
+                        setManualDraft((current) => ({
+                          ...current,
+                          title: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label>
+                    In <small>MM:SS.s</small>
+                    <input
+                      value={manualDraft.start}
+                      placeholder="00:10.0"
+                      onChange={(event) =>
+                        setManualDraft((current) => ({
+                          ...current,
+                          start: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="text-button manual-playhead"
+                    onClick={() =>
+                      setManualDraft((current) => ({
+                        ...current,
+                        start: formatTimestamp(playheadSeconds),
+                      }))
+                    }
+                  >
+                    Use playhead
+                  </button>
+                  <label>
+                    Out <small>MM:SS.s</small>
+                    <input
+                      value={manualDraft.end}
+                      placeholder="00:25.0"
+                      onChange={(event) =>
+                        setManualDraft((current) => ({
+                          ...current,
+                          end: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="text-button manual-playhead"
+                    onClick={() =>
+                      setManualDraft((current) => ({
+                        ...current,
+                        end: formatTimestamp(playheadSeconds),
+                      }))
+                    }
+                  >
+                    Use playhead
+                  </button>
+                  <button className="secondary-button">Add clip</button>
+                </form>
+                <div className="manual-clip-list" aria-live="polite">
+                  {manualClips.length ? (
+                    manualClips.map((clip, index) => (
+                      <div key={clip.id}>
+                        <span>{index + 1}</span>
+                        <strong>{clip.title}</strong>
+                        <small>
+                          {formatTimestamp(clip.start)}–{formatTimestamp(clip.end)}
+                        </small>
+                        <button
+                          className="text-button"
+                          onClick={() =>
+                            setManualClips((current) =>
+                              current.filter((item) => item.id !== clip.id),
+                            )
+                          }
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))
+                  ) : (
+                    <p>
+                      Play the source below, add one or more ranges, then create
+                      the first cut. Manual mode does not need Tesseract or AI.
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
           </section>
 
           <section className="preview-workspace" aria-label="Video preview">
@@ -2229,7 +2966,9 @@ export default function Home() {
                     !reviewerAvailable || (mode === "live" && !previewJobId)
                   }
                   title={
-                    reviewerAvailable
+                    aiAssistance === "off"
+                      ? "Turn AI assistance to Review to enable Agent 2"
+                      : reviewerAvailable
                       ? "Run an optional independent review"
                       : "Configure a reviewer model to enable Agent 2"
                   }
@@ -2722,9 +3461,11 @@ export default function Home() {
               </>
             ) : (
               <p>
-                {reviewerAvailable
+                {aiAssistance === "off"
+                  ? "AI assistance is off. Manual review and exact-version human approval remain fully available."
+                  : reviewerAvailable
                   ? "Optional: run the independent reviewer after the preview is ready. Agent approval never replaces your approval."
-                  : "Agent 2 is not configured. Manual review and exact-version human approval remain fully available."}
+                  : "Review mode is selected, but no local reviewer model is configured. Manual review remains fully available."}
               </p>
             )}
             {workflow?.error && <p className="inline-error">{workflow.error}</p>}
@@ -2732,7 +3473,7 @@ export default function Home() {
         </aside>
       </div>
 
-      <footer className="approval-bar">
+      <footer className={`approval-bar ${setupNeeded ? "setup-hidden" : ""}`}>
         <div className="approval-summary" role="status" aria-live="polite">
           <span className={error ? "error-indicator" : "status-indicator"} />
           <div>
@@ -2771,8 +3512,13 @@ export default function Home() {
               )}
               <button
                 className="secondary-button"
-                disabled
-                title="Available after desktop packaging in Batch 3"
+                disabled={!desktopMode || !finalJob.output_path}
+                onClick={() => void revealFinalOutput()}
+                title={
+                  desktopMode
+                    ? "Show the final render in Finder"
+                    : "Available in the Cutroom desktop app"
+                }
               >
                 Open folder
               </button>
