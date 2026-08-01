@@ -1887,6 +1887,8 @@ export interface components {
             id?: string;
             /** Name */
             name: string;
+            /** Workspace Path */
+            workspace_path?: string | null;
         };
         /** ProjectCreateRequest */
         ProjectCreateRequest: {

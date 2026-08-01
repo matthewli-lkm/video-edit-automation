@@ -15,6 +15,11 @@ test("desktop onboarding separates new projects from existing folders", async ()
   assert.match(source, /Upload a recording to begin/);
   assert.match(source, /Add another recording/);
   assert.match(source, /Cutroom lost its local connection/);
+  assert.match(source, /Done editing · Export/);
+  assert.match(source, /Combined video/);
+  assert.match(source, /Separate clips/);
+  assert.match(source, /Nothing will be uploaded/);
+  assert.doesNotMatch(source, /Done editing · Review cut/);
   assert.doesNotMatch(source, /Bring one recording\. Leave with clean clips/);
   assert.doesNotMatch(source, /Choose your recording/);
   assert.match(source, /setShowSetup\(false\)/);

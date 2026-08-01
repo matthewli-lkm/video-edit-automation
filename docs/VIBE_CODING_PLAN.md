@@ -275,15 +275,18 @@ signing, notarization, updates, and clean-Mac release qualification are the Batc
 
 The console now exposes Manual and deterministic Kill & teamfight detection as first-cut workflows,
 with AI assistance stored as a separate Off/Review setting. Manual ranges create typed manual
-evidence and use the same review, versioned human approval, preview, and final-render pipeline as
-automatic candidates. The deterministic workflow has no natural-language field: it accepts only
+evidence and a validated plan, but exact human-trimmed ranges skip the redundant automatic-plan
+approval screen. Manual editing marks and includes plays, trims each selected play with direct
+manipulation or precise timestamps, then exports a combined reel, separate clips, or both. The deterministic workflow has no
+natural-language field: it accepts only
 Tesseract-detected champion kills, multikills, and kill clusters, then merges nearby action into
 teamfight clips. Full local-model editing remains deliberately deferred.
 
 Desktop onboarding now has only two mutually exclusive choices: create a new managed clips project
 or open an existing video folder in Finder. Both enter the editing room immediately. Empty projects
 prompt for their first recording inside the editor, and active projects can add further recordings
-there. The dashboard also avoids restoring through a stale default backend port and translates
+there. New projects appear under `Desktop/Cutroom Projects/<project name>` and finished MP4s stay in
+that project's `Exports` folder. The dashboard also avoids restoring through a stale default backend port and translates
 loopback connection failures into a useful retry message.
 
 ## Milestone 6 — evaluation and learning loop

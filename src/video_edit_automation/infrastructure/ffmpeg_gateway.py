@@ -106,6 +106,10 @@ class FFmpegGateway:
                 text=True,
                 shell=False,
             )
+        except FileNotFoundError as exc:
+            raise MediaToolError(
+                "FFprobe could not be found. Install FFmpeg, then restart Cutroom."
+            ) from exc
         except OSError as exc:
             raise MediaToolError(f"Unable to start ffprobe: {exc}") from exc
         if completed.returncode != 0:
@@ -406,6 +410,12 @@ class FFmpegGateway:
         preset: RenderPreset,
     ) -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            output_path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise MediaToolError(
+                f"Unable to replace the existing render output: {exc}"
+            ) from exc
         command = self.build_render_command(plan, assets, output_path, preset)
         try:
             completed = subprocess.run(
@@ -419,19 +429,43 @@ class FFmpegGateway:
             raise MediaToolError(f"Unable to start FFmpeg: {exc}") from exc
         if completed.returncode != 0:
             detail = completed.stderr.strip()[-4_000:]
-            raise MediaToolError(f"FFmpeg render failed: {detail}")
+            cleanup_error = self._discard_incomplete_output(output_path)
+            if completed.returncode < 0:
+                outcome = f"was terminated by signal {-completed.returncode}"
+            else:
+                outcome = f"exited with code {completed.returncode}"
+            diagnostic = detail or "no error output was produced"
+            raise MediaToolError(
+                f"FFmpeg render {outcome}: {diagnostic}{cleanup_error}"
+            )
         if not output_path.is_file() or output_path.stat().st_size == 0:
-            raise MediaToolError("FFmpeg exited successfully but did not create a usable output")
+            cleanup_error = self._discard_incomplete_output(output_path)
+            raise MediaToolError(
+                "FFmpeg exited successfully but did not create a usable output"
+                f"{cleanup_error}"
+            )
         try:
             rendered = self.probe(output_path)
         except MediaToolError as exc:
+            cleanup_error = self._discard_incomplete_output(output_path)
             raise MediaToolError(
-                f"FFmpeg exited successfully but created an invalid output: {exc}"
+                "FFmpeg exited successfully but created an invalid output: "
+                f"{exc}{cleanup_error}"
             ) from exc
         expected_duration = plan.duration_seconds
         duration_tolerance = max(0.5, expected_duration * 0.01)
         if abs(rendered.duration_seconds - expected_duration) > duration_tolerance:
+            cleanup_error = self._discard_incomplete_output(output_path)
             raise MediaToolError(
                 "Rendered duration does not match the validated edit plan: "
                 f"expected {expected_duration:.3f}s, got {rendered.duration_seconds:.3f}s"
+                f"{cleanup_error}"
             )
+
+    @staticmethod
+    def _discard_incomplete_output(output_path: Path) -> str:
+        try:
+            output_path.unlink(missing_ok=True)
+        except OSError as exc:
+            return f"; the incomplete output could not be removed: {exc}"
+        return ""

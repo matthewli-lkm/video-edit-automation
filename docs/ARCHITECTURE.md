@@ -129,10 +129,12 @@ approval history. A browser revision submits a complete typed `EditPlanDraft` to
 ID it was based on. The application rejects stale revisions, validates the draft against real
 source durations, creates a new plan version, and clears active approval.
 
-Approval requires every proposed candidate to have a latest accept, adjust, or reject decision. It
+Approval requires every automatically proposed candidate to have a latest accept, adjust, or reject decision. It
 records the exact plan ID and version. `RenderService` permits preview jobs without approval but
-rejects final-render requests unless that exact plan/version remains active. Reviewer-agent approval
-never satisfies this check.
+rejects automatic final-render requests unless that exact plan/version remains active.
+`manual-workflow` plans are the narrow exception: their exact ranges were already chosen and
+reviewed by the user in the trim stage, so they may render without a second approval. Reviewer-agent
+approval never satisfies the automatic-plan check.
 
 Rendered media is exposed only by job ID. The API resolves the stored path again and requires it to
 be an MP4 inside that project's managed render directory; clients cannot submit or retrieve an
@@ -174,8 +176,10 @@ Recording import belongs to the project workspace, where an empty project clearl
 first recording and an active project can add further recordings.
 
 The user chooses a first-cut workflow independently from AI assistance. Manual converts exact
-human-selected ranges into `manual_marker` signals, a typed analysis, a validated plan, and a
-normal highlight-review session. Automation is intentionally limited to visible League champion
+human-selected ranges into `manual_marker` signals, a typed analysis, and a validated plan. Its
+local UI separates source play selection, per-play trimming, and export. Export can render one
+combined reel, one MP4 per clip, or both; no extra review screen is shown. Automation is
+intentionally limited to visible League champion
 kills, multikills, and kill clusters that represent teamfights; it does not accept free-form text
 or call an LLM. Tesseract supplies those HUD events, and plans reject audio-, objective-, or
 result-only evidence. AI Review may run the bounded Agent 2 contract after a preview exists. Full
@@ -192,7 +196,8 @@ The preload bridge exposes only typed native actions. The video-folder and recor
 real paths only when they remain inside the same configured media-root policy used by the backend.
 A locally saved folder-to-project association lets Finder reopen the appropriate Cutroom project;
 it does not move or rewrite media. Finder reveal is limited to an existing MP4 under the desktop
-application's managed `projects/` workspace. The web dashboard cannot execute commands, select
+application's managed project roots. New desktop projects are named folders under
+`~/Desktop/Cutroom Projects`; legacy app-data projects remain readable. The web dashboard cannot execute commands, select
 output paths, broaden filesystem roots, or reveal an arbitrary local path.
 
 Desktop bootstrap never restores a project through the dashboard's old default port. The renderer
@@ -213,17 +218,19 @@ notarization, update delivery, and clean-Mac release qualification belong to Bat
 ## Local workspace
 
 ```text
-~/.video-edit-automation/
-├── metadata.sqlite3
-└── projects/
-    └── <project-id>/
-        ├── analysis/
-        ├── imports/
-        ├── proxies/
-        ├── renders/
-        │   ├── previews/
-        │   └── final/
-        └── logs/
+~/Library/Application Support/Cutroom/
+└── metadata.sqlite3
+
+~/Desktop/Cutroom Projects/
+└── <project name>/
+    ├── .cutroom-project
+    ├── analysis/
+    ├── imports/
+    ├── proxies/
+    ├── renders/
+    │   └── previews/
+    ├── Exports/
+    └── logs/
 ```
 
 Manual source footage stays where the user put it. READY capture-inbox packages use managed import:

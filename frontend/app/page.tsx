@@ -13,8 +13,18 @@ import {
   clampBoundary,
   createBoundaryWindow,
   formatTimestamp,
+  moveClipRange,
   parseTimestamp,
+  positionRangeInWindow,
 } from "./time";
+import {
+  createPlayAroundPlayhead,
+  selectedManualClips,
+  totalManualDuration,
+  validateManualClips,
+  type ManualClip,
+} from "./manual-editor";
+import { runSequentialTasks, waitForTerminalJob } from "./export-workflow";
 import { deriveWorkflowSteps } from "./workflow";
 import {
   playbackStatusCopy,
@@ -26,16 +36,20 @@ import type { components } from "./generated/api-schema";
 
 type Mode = "demo" | "live";
 type EditWorkflow = "manual" | "automation";
+type ManualStage = "select" | "edit" | "export";
+type ManualExportMode = "combined" | "separate" | "both";
 type AiAssistance = "off" | "review" | "full";
 type Decision = "pending" | "accept" | "reject" | "adjust";
 type PreviewMode = "source" | "cut" | "reel";
 type TrimPoint = { start: number; end: number };
 type TrimHistory = { entries: TrimPoint[]; cursor: number };
-type ManualClipDraft = {
-  id: string;
-  title: string;
-  start: number;
-  end: number;
+type ManualRangeDrag = {
+  kind: "move" | "start" | "end";
+  pointerStart: number;
+  rangeStart: number;
+  rangeEnd: number;
+  viewStart: number;
+  viewEnd: number;
 };
 type ApiSchemas = components["schemas"];
 type WithId<T extends { id?: string }> = Omit<T, "id"> & { id: string };
@@ -161,6 +175,684 @@ declare global {
   interface Window {
     cutroomDesktop?: CutroomDesktopBridge;
   }
+}
+
+function ManualRangeEditor({
+  sourceDuration,
+  start,
+  end,
+  playheadSeconds,
+  onChange,
+  onPreviewSeek,
+}: {
+  sourceDuration: number;
+  start: number;
+  end: number;
+  playheadSeconds: number;
+  onChange: (range: TrimPoint) => void;
+  onPreviewSeek: (seconds: number) => void;
+}) {
+  const trackRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<ManualRangeDrag | null>(null);
+  const safeDuration = Math.max(sourceDuration, 0.1);
+  const [view] = useState<TrimPoint>(() =>
+    createBoundaryWindow(start, end, safeDuration, 30),
+  );
+  const visibleDuration = Math.max(0.1, view.end - view.start);
+  const rangePosition = positionRangeInWindow(
+    start,
+    end,
+    view.start,
+    view.end,
+  );
+  const startPercent = rangePosition.left;
+  const endPercent = rangePosition.left + rangePosition.width;
+  const playheadPercent =
+    ((playheadSeconds - view.start) / visibleDuration) * 100;
+
+  function pointerSeconds(
+    clientX: number,
+    activeView: TrimPoint = view,
+  ) {
+    const bounds = trackRef.current?.getBoundingClientRect();
+    if (!bounds || bounds.width <= 0) return start;
+    return Math.min(
+      activeView.end,
+      Math.max(
+        activeView.start,
+        activeView.start +
+          ((clientX - bounds.left) / bounds.width) *
+            (activeView.end - activeView.start),
+      ),
+    );
+  }
+
+  function beginDrag(
+    kind: ManualRangeDrag["kind"],
+    event: React.PointerEvent<HTMLButtonElement>,
+  ) {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const activeView = { ...view };
+    dragRef.current = {
+      kind,
+      pointerStart: pointerSeconds(event.clientX, activeView),
+      rangeStart: start,
+      rangeEnd: end,
+      viewStart: activeView.start,
+      viewEnd: activeView.end,
+    };
+  }
+
+  function continueDrag(event: React.PointerEvent<HTMLButtonElement>) {
+    const drag = dragRef.current;
+    if (!drag) return;
+    const pointer = pointerSeconds(event.clientX, {
+      start: drag.viewStart,
+      end: drag.viewEnd,
+    });
+    if (drag.kind === "move") {
+      const range = moveClipRange(
+        drag.rangeStart,
+        drag.rangeEnd,
+        pointer - drag.pointerStart,
+        safeDuration,
+      );
+      onChange(range);
+      onPreviewSeek(range.start);
+      return;
+    }
+    if (drag.kind === "start") {
+      const range = {
+        start: clampBoundary(
+          "start",
+          pointer,
+          drag.rangeStart,
+          drag.rangeEnd,
+          safeDuration,
+        ),
+        end: drag.rangeEnd,
+      };
+      onChange(range);
+      onPreviewSeek(range.start);
+      return;
+    }
+    const range = {
+      start: drag.rangeStart,
+      end: clampBoundary(
+        "end",
+        pointer,
+        drag.rangeStart,
+        drag.rangeEnd,
+        safeDuration,
+      ),
+    };
+    onChange(range);
+    onPreviewSeek(Math.max(range.start, range.end - 1));
+  }
+
+  function finishDrag(event: React.PointerEvent<HTMLButtonElement>) {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    dragRef.current = null;
+  }
+
+  function handleKey(
+    kind: ManualRangeDrag["kind"],
+    event: React.KeyboardEvent<HTMLButtonElement>,
+  ) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const delta = (event.key === "ArrowLeft" ? -1 : 1) * (event.shiftKey ? 1 : 0.1);
+    if (kind === "move") {
+      const range = moveClipRange(start, end, delta, safeDuration);
+      onChange(range);
+      onPreviewSeek(range.start);
+    } else if (kind === "start") {
+      const range = {
+        start: clampBoundary("start", start + delta, start, end, safeDuration),
+        end,
+      };
+      onChange(range);
+      onPreviewSeek(range.start);
+    } else {
+      const range = {
+        start,
+        end: clampBoundary("end", end + delta, start, end, safeDuration),
+      };
+      onChange(range);
+      onPreviewSeek(Math.max(range.start, range.end - 1));
+    }
+  }
+
+  return (
+    <div className="manual-range-editor">
+      <div className="manual-range-heading">
+        <span>
+          <strong>Clip range</strong>
+          <small>Drag the clip to move it · drag either edge to resize</small>
+        </span>
+        <output>{formatTimestamp(end - start)}</output>
+      </div>
+      <div
+        className="manual-range-track"
+        ref={trackRef}
+        aria-label="Manual clip timeline"
+      >
+        <div className="manual-range-grid" aria-hidden="true" />
+        {playheadPercent >= 0 && playheadPercent <= 100 && (
+          <span
+            className="manual-range-playhead"
+            style={{ left: `${playheadPercent}%` }}
+            aria-hidden="true"
+          />
+        )}
+        <button
+          type="button"
+          className="manual-range-selection"
+          style={{
+            left: `${startPercent}%`,
+            width: `${Math.max(0.1, endPercent - startPercent)}%`,
+          }}
+          onPointerDown={(event) => beginDrag("move", event)}
+          onPointerMove={continueDrag}
+          onPointerUp={finishDrag}
+          onPointerCancel={finishDrag}
+          onKeyDown={(event) => handleKey("move", event)}
+          aria-label={`Move clip, ${formatTimestamp(start)} to ${formatTimestamp(end)}`}
+        >
+          <span>{formatTimestamp(end - start)}</span>
+        </button>
+        <button
+          type="button"
+          className="manual-range-handle manual-range-handle-start"
+          style={{ left: `${startPercent}%` }}
+          onPointerDown={(event) => beginDrag("start", event)}
+          onPointerMove={continueDrag}
+          onPointerUp={finishDrag}
+          onPointerCancel={finishDrag}
+          onKeyDown={(event) => handleKey("start", event)}
+          aria-label={`Resize clip start, currently ${formatTimestamp(start)}`}
+        />
+        <button
+          type="button"
+          className="manual-range-handle manual-range-handle-end"
+          style={{ left: `${endPercent}%` }}
+          onPointerDown={(event) => beginDrag("end", event)}
+          onPointerMove={continueDrag}
+          onPointerUp={finishDrag}
+          onPointerCancel={finishDrag}
+          onKeyDown={(event) => handleKey("end", event)}
+          aria-label={`Resize clip end, currently ${formatTimestamp(end)}`}
+        />
+      </div>
+      <div className="manual-range-summary" aria-live="polite">
+        <span>
+          <small>Starts</small>
+          <strong>{formatTimestamp(start)}</strong>
+        </span>
+        <span>
+          <small>Clip length</small>
+          <strong>{formatTimestamp(end - start)}</strong>
+        </span>
+        <span>
+          <small>Ends</small>
+          <strong>{formatTimestamp(end)}</strong>
+        </span>
+      </div>
+      <div className="manual-range-times">
+        <span>
+          In <strong>{formatTimestamp(start)}</strong>
+        </span>
+        <span>
+          Window {formatTimestamp(view.start)}–{formatTimestamp(view.end)}
+        </span>
+        <span>
+          Out <strong>{formatTimestamp(end)}</strong>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function ManualWorkbench({
+  stage,
+  clips,
+  activeClipId,
+  playheadSeconds,
+  sourceDuration,
+  busy,
+  onStageChange,
+  onMarkPlay,
+  onToggleClip,
+  onSelectClip,
+  onUpdateClip,
+  onRemoveClip,
+  onSplitClip,
+  onSeek,
+  onPrepareExport,
+}: {
+  stage: Exclude<ManualStage, "export">;
+  clips: ManualClip[];
+  activeClipId: string;
+  playheadSeconds: number;
+  sourceDuration: number;
+  busy: boolean;
+  onStageChange: (stage: "select" | "edit") => void;
+  onMarkPlay: () => void;
+  onToggleClip: (id: string) => void;
+  onSelectClip: (id: string) => void;
+  onUpdateClip: (id: string, patch: Partial<ManualClip>) => void;
+  onRemoveClip: (id: string) => void;
+  onSplitClip: (id: string) => void;
+  onSeek: (seconds: number) => void;
+  onPrepareExport: () => void;
+}) {
+  const selectedClips = selectedManualClips(clips);
+  const activeClip =
+    selectedClips.find((clip) => clip.id === activeClipId) ?? selectedClips[0];
+  const totalDuration = totalManualDuration(clips);
+  const safeDuration = Math.max(0.1, sourceDuration);
+
+  function commitTime(field: "start" | "end", value: string) {
+    if (!activeClip) return;
+    const parsed = parseTimestamp(value);
+    if (parsed === null) return;
+    const nextValue = clampBoundary(
+      field,
+      parsed,
+      activeClip.start,
+      activeClip.end,
+      safeDuration,
+    );
+    onUpdateClip(activeClip.id, { [field]: nextValue });
+    onSeek(nextValue);
+  }
+
+  return (
+    <section
+      className={`manual-workbench ${stage === "edit" ? "compact-edit" : ""}`}
+      aria-labelledby="manual-workbench-title"
+    >
+      <header className="manual-workbench-header">
+        <div>
+          <span className="eyebrow">Manual editor</span>
+          <h2 id="manual-workbench-title">
+            {stage === "select" ? "Choose the plays worth keeping" : "Shape your selected clips"}
+          </h2>
+          <p>
+            {stage === "select"
+              ? "Scrub the recording, mark the moments you remember, and choose which ones enter the edit."
+              : "Trim directly on the active clip. Cutroom keeps every change non-destructive."}
+          </p>
+        </div>
+        <div className="manual-stage-nav" aria-label="Manual editing steps">
+          <button
+            className={stage === "select" ? "current" : "complete"}
+            onClick={() => onStageChange("select")}
+          >
+            <span>1</span> Select plays
+          </button>
+          <button
+            className={stage === "edit" ? "current" : ""}
+            onClick={() => selectedClips.length && onStageChange("edit")}
+            disabled={!selectedClips.length}
+          >
+            <span>2</span> Trim clips
+          </button>
+          <button disabled>
+            <span>3</span> Export
+          </button>
+        </div>
+      </header>
+
+      {stage === "select" ? (
+        <div className="manual-select-stage">
+          <div className="manual-mark-callout">
+            <span className="manual-scissors" aria-hidden="true">✂</span>
+            <div>
+              <strong>Found a play?</strong>
+              <small>
+                Pause near the action and mark it. Cutroom starts with 12 seconds of setup and a 30-second window.
+              </small>
+            </div>
+            <output>{formatTimestamp(playheadSeconds)}</output>
+            <button className="primary-button" onClick={onMarkPlay} disabled={busy}>
+              Mark play here
+            </button>
+          </div>
+
+          <div className="manual-source-map">
+            <div className="manual-source-map-heading">
+              <span>
+                <strong>Recording map</strong>
+                <small>Click a marked play to preview it · click the check to include or skip it</small>
+              </span>
+              <output>{formatTimestamp(sourceDuration)}</output>
+            </div>
+            <div className="manual-source-map-track" aria-label="Marked plays across the recording">
+              <span
+                className="manual-map-playhead"
+                style={{ left: `${(playheadSeconds / safeDuration) * 100}%` }}
+              />
+              {clips.map((clip, index) => (
+                <button
+                  key={clip.id}
+                  className={clip.selected ? "selected" : ""}
+                  style={{
+                    left: `${(clip.start / safeDuration) * 100}%`,
+                    width: `${Math.max(1.2, ((clip.end - clip.start) / safeDuration) * 100)}%`,
+                  }}
+                  onClick={() => {
+                    onSelectClip(clip.id);
+                    onSeek(clip.start);
+                  }}
+                  aria-label={`${clip.title}, ${formatTimestamp(clip.start)} to ${formatTimestamp(clip.end)}`}
+                >
+                  {index + 1}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="manual-play-list" aria-live="polite">
+            {clips.length ? (
+              clips.map((clip, index) => (
+                <article
+                  key={clip.id}
+                  className={`${clip.selected ? "selected" : ""} ${clip.id === activeClipId ? "active" : ""}`}
+                >
+                  <button
+                    className="manual-play-preview"
+                    onClick={() => {
+                      onSelectClip(clip.id);
+                      onSeek(clip.start);
+                    }}
+                  >
+                    <span>{String(index + 1).padStart(2, "0")}</span>
+                    <span aria-hidden="true">▶</span>
+                  </button>
+                  <button
+                    className="manual-play-copy"
+                    onClick={() => {
+                      onSelectClip(clip.id);
+                      onSeek(clip.start);
+                    }}
+                  >
+                    <strong>{clip.title}</strong>
+                    <small>
+                      {formatTimestamp(clip.start)}–{formatTimestamp(clip.end)} · {formatTimestamp(clip.end - clip.start)}
+                    </small>
+                  </button>
+                  <button
+                    className={`manual-play-check ${clip.selected ? "selected" : ""}`}
+                    onClick={() => onToggleClip(clip.id)}
+                    aria-pressed={clip.selected}
+                  >
+                    {clip.selected ? "✓ Included" : "+ Include"}
+                  </button>
+                  <button
+                    className="manual-play-remove"
+                    onClick={() => onRemoveClip(clip.id)}
+                    aria-label={`Remove ${clip.title}`}
+                  >
+                    ×
+                  </button>
+                </article>
+              ))
+            ) : (
+              <div className="manual-play-empty">
+                <span aria-hidden="true">⌁</span>
+                <strong>No plays marked yet</strong>
+                <small>Use the source player above, pause near a highlight, then choose “Mark play here.”</small>
+              </div>
+            )}
+          </div>
+
+          <footer className="manual-workbench-footer">
+            <span>
+              <strong>{selectedClips.length}</strong> selected · {formatTimestamp(totalDuration)} total
+            </span>
+            <button
+              className="primary-button manual-edit-cta"
+              disabled={!selectedClips.length || busy}
+              onClick={() => onStageChange("edit")}
+            >
+              <span aria-hidden="true">✂</span> Edit {selectedClips.length || "selected"} {selectedClips.length === 1 ? "play" : "plays"}
+            </button>
+          </footer>
+        </div>
+      ) : (
+        <div className="manual-edit-stage">
+          <div className="manual-clip-strip" aria-label="Selected clips">
+            <span className="manual-clip-strip-label">
+              <small>Play clips</small>
+              <strong>Choose a clip to trim</strong>
+            </span>
+            {selectedClips.map((clip, index) => (
+              <button
+                key={clip.id}
+                className={clip.id === activeClip?.id ? "active" : ""}
+                onClick={() => {
+                  onSelectClip(clip.id);
+                  onSeek(clip.start);
+                }}
+              >
+                <span>{index + 1}</span>
+                <span>
+                  <strong>{clip.title}</strong>
+                  <small>{formatTimestamp(clip.end - clip.start)}</small>
+                </span>
+              </button>
+            ))}
+          </div>
+
+          {activeClip && (
+            <div className="manual-clip-editor">
+              <div className="manual-clip-editor-topline">
+                <label>
+                  Clip name
+                  <input
+                    value={activeClip.title}
+                    onChange={(event) => onUpdateClip(activeClip.id, { title: event.target.value })}
+                  />
+                </label>
+                <div className="manual-clip-tools">
+                  <button
+                    className="secondary-button"
+                    onClick={() => onSplitClip(activeClip.id)}
+                    disabled={playheadSeconds <= activeClip.start + 0.1 || playheadSeconds >= activeClip.end - 0.1}
+                    title="Place the playhead inside this clip"
+                  >
+                    ✂ Split at playhead
+                  </button>
+                  <button className="text-button danger" onClick={() => onRemoveClip(activeClip.id)}>
+                    Remove clip
+                  </button>
+                </div>
+              </div>
+
+              <ManualRangeEditor
+                key={activeClip.id}
+                sourceDuration={sourceDuration}
+                start={activeClip.start}
+                end={activeClip.end}
+                playheadSeconds={playheadSeconds}
+                onChange={(range) => onUpdateClip(activeClip.id, range)}
+                onPreviewSeek={onSeek}
+              />
+
+              <div className="manual-precision-row">
+                <label key={`${activeClip.id}-start-${activeClip.start}`}>
+                  In <small>MM:SS.s</small>
+                  <input
+                    defaultValue={formatTimestamp(activeClip.start)}
+                    onBlur={(event) => commitTime("start", event.target.value)}
+                    onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()}
+                  />
+                </label>
+                <button
+                  className="text-button"
+                  onClick={() => commitTime("start", formatTimestamp(playheadSeconds))}
+                >
+                  Set In to playhead
+                </button>
+                <div className="manual-duration-readout">
+                  <span>Duration</span>
+                  <strong>{formatTimestamp(activeClip.end - activeClip.start)}</strong>
+                </div>
+                <label key={`${activeClip.id}-end-${activeClip.end}`}>
+                  Out <small>MM:SS.s</small>
+                  <input
+                    defaultValue={formatTimestamp(activeClip.end)}
+                    onBlur={(event) => commitTime("end", event.target.value)}
+                    onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()}
+                  />
+                </label>
+                <button
+                  className="text-button"
+                  onClick={() => commitTime("end", formatTimestamp(playheadSeconds))}
+                >
+                  Set Out to playhead
+                </button>
+              </div>
+              <p className="manual-keyboard-hint">
+                Tip: drag either gold handle for a rough cut, then use the time fields for precision. The source is never changed.
+              </p>
+            </div>
+          )}
+
+          <footer className="manual-workbench-footer">
+            <button className="secondary-button" onClick={() => onStageChange("select")}>
+              ← Back to plays
+            </button>
+            <span>
+              <strong>{selectedClips.length}</strong> clips · {formatTimestamp(totalDuration)} final length
+            </span>
+            <button className="primary-button" onClick={onPrepareExport} disabled={busy}>
+              {busy ? "Preparing export…" : "Done editing · Export →"}
+            </button>
+          </footer>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ManualExportPanel({
+  clips,
+  exportMode,
+  jobs,
+  projectPath,
+  busy,
+  onModeChange,
+  onExport,
+  onBack,
+  onReveal,
+}: {
+  clips: ManualClip[];
+  exportMode: ManualExportMode;
+  jobs: RenderJob[];
+  projectPath?: string;
+  busy: boolean;
+  onModeChange: (mode: ManualExportMode) => void;
+  onExport: () => void;
+  onBack: () => void;
+  onReveal: (job: RenderJob) => void;
+}) {
+  const completed = jobs.filter((job) => job.status === "succeeded");
+  const failed = jobs.filter((job) => job.status === "failed");
+  const rendering = jobs.some((job) => ["queued", "running"].includes(job.status));
+  const expectedFiles =
+    exportMode === "combined"
+      ? 1
+      : exportMode === "separate"
+        ? clips.length
+        : clips.length + 1;
+
+  return (
+    <section className="manual-export-panel" aria-labelledby="manual-export-title">
+      <header>
+        <div>
+          <span className="eyebrow">Manual edit complete</span>
+          <h2 id="manual-export-title">Choose how to save your clips</h2>
+          <p>
+            You already reviewed every cut while trimming, so there is no extra approval step.
+          </p>
+        </div>
+        <span className="manual-export-location">
+          <small>Saved locally in</small>
+          <strong>{projectPath ? `${projectPath}/Exports` : "the project’s Exports folder"}</strong>
+        </span>
+      </header>
+
+      <div className="manual-export-options" role="radiogroup" aria-label="Export format">
+        {([
+          ["combined", "Combined video", "Join every clip into one highlight video."],
+          ["separate", "Separate clips", "Save one MP4 for each trimmed clip."],
+          ["both", "Both", "Save the combined video and every individual clip."],
+        ] as const).map(([value, title, description]) => (
+          <button
+            key={value}
+            type="button"
+            role="radio"
+            aria-checked={exportMode === value}
+            className={exportMode === value ? "selected" : ""}
+            onClick={() => onModeChange(value)}
+            disabled={rendering}
+          >
+            <span className="manual-export-radio" aria-hidden="true" />
+            <strong>{title}</strong>
+            <small>{description}</small>
+          </button>
+        ))}
+      </div>
+
+      <div className="manual-export-summary">
+        <span><strong>{clips.length}</strong> trimmed clips</span>
+        <span><strong>{expectedFiles}</strong> {expectedFiles === 1 ? "file" : "files"} to create</span>
+        <span><strong>MP4</strong> local export</span>
+      </div>
+
+      {jobs.length > 0 && (
+        <div className="manual-export-results" aria-live="polite">
+          {jobs.map((job, index) => (
+            <div key={job.id}>
+              <span className={`export-status ${job.status}`} aria-hidden="true" />
+              <span>
+                <strong>{jobs.length === 1 ? "Highlight video" : `Export ${index + 1}`}</strong>
+                <small>{statusLabel(job.status)}{job.error ? ` · ${job.error}` : ""}</small>
+              </span>
+              {job.status === "succeeded" && job.output_path && (
+                <button className="secondary-button" onClick={() => onReveal(job)}>
+                  Show in Finder
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <footer>
+        <button className="secondary-button" onClick={onBack} disabled={rendering}>
+          ← Back to trimming
+        </button>
+        <span>
+          {failed.length
+            ? `${failed.length} export failed`
+            : completed.length === jobs.length && jobs.length
+              ? `${completed.length} ${completed.length === 1 ? "file" : "files"} ready`
+              : rendering
+                ? "Rendering locally…"
+                : "Nothing will be uploaded"}
+        </span>
+        <button className="primary-button" onClick={onExport} disabled={busy || rendering}>
+          {rendering ? "Rendering…" : jobs.length ? "Export again" : "Export now"}
+        </button>
+      </footer>
+    </section>
+  );
 }
 
 const DEMO_CANDIDATES: Candidate[] = [
@@ -323,12 +1015,12 @@ export default function Home() {
     start: "",
     end: "",
   });
-  const [manualClips, setManualClips] = useState<ManualClipDraft[]>([]);
-  const [manualDraft, setManualDraft] = useState({
-    title: "Highlight",
-    start: "",
-    end: "",
-  });
+  const [manualClips, setManualClips] = useState<ManualClip[]>([]);
+  const [manualStage, setManualStage] = useState<ManualStage>("select");
+  const [manualExportMode, setManualExportMode] =
+    useState<ManualExportMode>("combined");
+  const [manualExportJobs, setManualExportJobs] = useState<RenderJob[]>([]);
+  const [activeManualClipId, setActiveManualClipId] = useState("");
   const [planRevisionNeeded, setPlanRevisionNeeded] = useState(false);
   const [playheadSeconds, setPlayheadSeconds] = useState(
     DEMO_CANDIDATES[1].start,
@@ -618,6 +1310,19 @@ export default function Home() {
       ? 1938
       : (activeAsset?.duration_seconds ??
         Math.max(1, ...candidates.map((candidate) => candidate.end)));
+  const selectedManual = selectedManualClips(manualClips);
+  const activeManualClip =
+    selectedManual.find((clip) => clip.id === activeManualClipId) ??
+    selectedManual[0];
+  const manualFocused = editWorkflow === "manual";
+  const previewSelection =
+    manualFocused && activeManualClip ? activeManualClip : selected;
+  const sourceMarkers = manualFocused
+    ? manualClips.map((clip) => ({
+        ...clip,
+        decision: clip.selected ? "accept" : "pending",
+      }))
+    : candidates;
   const maximumMinutes = Math.floor(targetDuration / 60);
   const maximumSeconds = Math.round(targetDuration % 60);
   const boundaryWindowStart = Math.min(boundaryWindow.start, sourceDuration);
@@ -653,7 +1358,7 @@ export default function Home() {
   );
   const sourceReady = mode === "demo" || Boolean(activeAsset);
   const briefReady =
-    editWorkflow === "automation" || manualClips.length > 0;
+    editWorkflow === "automation" || selectedManual.length > 0;
   const analysisReady = candidates.length > 0;
   const reviewReady =
     analysisReady &&
@@ -680,6 +1385,30 @@ export default function Home() {
     humanApproved: isApproved,
     finalRenderSucceeded: exportReady,
   });
+  const manualExportReady =
+    manualExportJobs.length > 0 &&
+    manualExportJobs.every((job) => job.status === "succeeded");
+  const visibleWorkflowSteps = editWorkflow === "manual"
+    ? [
+        { label: "Source", complete: sourceReady, current: !sourceReady },
+        {
+          label: "Select plays",
+          complete: manualStage !== "select",
+          current: manualStage === "select",
+        },
+        {
+          label: "Trim clips",
+          complete: manualStage === "export",
+          current: manualStage === "edit",
+        },
+        {
+          label: "Export",
+          complete: manualExportReady,
+          current: manualStage === "export" && !manualExportReady,
+        },
+      ]
+    : workflowSteps;
+
   const startPercent = selected
     ? Math.min(
         100,
@@ -746,10 +1475,15 @@ export default function Home() {
 
   async function revealFinalOutput() {
     if (!finalJob?.output_path || !window.cutroomDesktop) return;
+    await revealRenderOutput(finalJob);
+  }
+
+  async function revealRenderOutput(job: RenderJob) {
+    if (!job.output_path || !window.cutroomDesktop) return;
     setError("");
     try {
-      await window.cutroomDesktop.revealOutput(String(finalJob.output_path));
-      setNotice("Final output shown in Finder");
+      await window.cutroomDesktop.revealOutput(String(job.output_path));
+      setNotice("Export shown in Finder");
     } catch (nextError) {
       setError(
         nextError instanceof Error
@@ -810,6 +1544,7 @@ export default function Home() {
     setPreviewJobId("");
     setPreviewJob(null);
     setFinalJob(null);
+    setManualExportJobs([]);
     setPlayback(null);
     try {
       const [nextAssets, reviews, plans, jobs, workflows] = await Promise.all([
@@ -919,6 +1654,7 @@ export default function Home() {
     setPreviewJob(null);
     setPreviewJobId("");
     setFinalJob(null);
+    setManualExportJobs([]);
   }
 
   async function createProjectRecord(name: string) {
@@ -1006,6 +1742,10 @@ export default function Home() {
         asset,
       ]);
       setAssetId(asset.id);
+      setManualClips([]);
+      setManualStage("select");
+      setManualExportJobs([]);
+      setActiveManualClipId("");
       setSourcePath("");
       setNotice("Recording imported and probed");
       void preparePlayback(projectId, asset.id);
@@ -1016,44 +1756,83 @@ export default function Home() {
     }
   }
 
-  function addManualClip(event: FormEvent) {
-    event.preventDefault();
-    const start = parseTimestamp(manualDraft.start);
-    const end = parseTimestamp(manualDraft.end);
-    if (start === null || end === null || end <= start) {
-      setError("Enter a valid In and Out time; Out must be after In");
+  function markManualPlay() {
+    if (!sourceReady) {
+      setError("Choose a recording before marking a play");
       return;
     }
-    if (end > sourceDuration) {
-      setError("The manual clip cannot end after the recording");
-      return;
-    }
-    if (
-      manualClips.some(
-        (clip) => start < clip.end && end > clip.start,
-      )
-    ) {
-      setError("Manual clips cannot overlap");
-      return;
-    }
-    setError("");
-    setManualClips((current) =>
-      [
-        ...current,
-        {
-          id: crypto.randomUUID(),
-          title: manualDraft.title.trim() || `Highlight ${current.length + 1}`,
-          start,
-          end,
-        },
-      ].sort((left, right) => left.start - right.start),
+    const existing = manualClips.find(
+      (clip) => playheadSeconds >= clip.start && playheadSeconds <= clip.end,
     );
-    setManualDraft({
-      title: `Highlight ${manualClips.length + 2}`,
-      start: "",
-      end: "",
-    });
-    setNotice("Manual clip added to the first cut");
+    if (existing) {
+      setManualClips((current) =>
+        current.map((clip) =>
+          clip.id === existing.id ? { ...clip, selected: true } : clip,
+        ),
+      );
+      setActiveManualClipId(existing.id);
+      setNotice(`${existing.title} already covers this moment`);
+      return;
+    }
+    const id = crypto.randomUUID();
+    const clip = createPlayAroundPlayhead(
+      playheadSeconds,
+      sourceDuration,
+      manualClips.length,
+      id,
+    );
+    setManualClips((current) =>
+      [...current, clip].sort((left, right) => left.start - right.start),
+    );
+    setActiveManualClipId(id);
+    setError("");
+    setNotice(`${clip.title} marked at ${formatTimestamp(playheadSeconds)}`);
+  }
+
+  function updateManualClip(id: string, patch: Partial<ManualClip>) {
+    setManualClips((current) =>
+      current.map((clip) => (clip.id === id ? { ...clip, ...patch } : clip)),
+    );
+    setError("");
+  }
+
+  function removeManualClip(id: string) {
+    setManualClips((current) => current.filter((clip) => clip.id !== id));
+    if (activeManualClipId === id) {
+      const next = selectedManual.find((clip) => clip.id !== id);
+      setActiveManualClipId(next?.id ?? "");
+    }
+    setNotice("Play removed from the manual edit");
+  }
+
+  function splitManualClip(id: string) {
+    const clip = manualClips.find((item) => item.id === id);
+    if (
+      !clip ||
+      playheadSeconds <= clip.start + 0.1 ||
+      playheadSeconds >= clip.end - 0.1
+    ) {
+      setError("Place the playhead inside the active clip before splitting");
+      return;
+    }
+    const secondId = crypto.randomUUID();
+    setManualClips((current) =>
+      current.flatMap((item) =>
+        item.id === id
+          ? [
+              { ...item, title: `${item.title} A`, end: playheadSeconds },
+              {
+                ...item,
+                id: secondId,
+                title: `${item.title} B`,
+                start: playheadSeconds,
+              },
+            ]
+          : item,
+      ),
+    );
+    setActiveManualClipId(secondId);
+    setNotice(`Split ${clip.title} at ${formatTimestamp(playheadSeconds)}`);
   }
 
   async function loadCreatedPlan(
@@ -1094,11 +1873,39 @@ export default function Home() {
     await renderPreview(result.plan.id);
   }
 
-  async function createManualFirstCut() {
-    if (!manualClips.length) {
-      setError("Add at least one manual clip first");
+  async function requestManualPlan(clips: ManualClip[]) {
+    return await requestJson<{
+      plan: Plan;
+      review_session: ReviewSnapshot["session"];
+    }>(
+      apiUrl,
+      `/api/v1/projects/${projectId}/assets/${assetId}/gaming/manual-highlight-plans`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          brief: {
+            objective: "Keep the manually selected clips",
+            editing_profile: "gameplay_highlights",
+            aspect_ratio: "16:9",
+            style: "Exact human-selected gaming highlights",
+          },
+          clips: clips.map((clip) => ({
+            title: clip.title,
+            start_seconds: clip.start,
+            end_seconds: clip.end,
+          })),
+        }),
+      },
+    );
+  }
+
+  async function prepareManualExport() {
+    const validationError = validateManualClips(manualClips, sourceDuration);
+    if (validationError) {
+      setError(validationError);
       return;
     }
+    const clipsForReview = selectedManualClips(manualClips);
     setDemoApproved(false);
     setTrimDrafts({});
     setTrimHistory({});
@@ -1107,64 +1914,129 @@ export default function Home() {
     setPreviewJob(null);
     setPreviewJobId("");
     setFinalJob(null);
+    setManualExportJobs([]);
     if (mode === "demo") {
-      setDemoCandidates(
-        manualClips.map((clip, index) => ({
-          id: `demo-manual-${clip.id}`,
-          index,
-          title: clip.title,
-          start: clip.start,
-          end: clip.end,
-          score: 1,
-          signalIds: [`demo-manual-marker-${index + 1}`],
-          labels: ["manual selection"],
-          decision: "pending",
-        })),
+      setManualStage("export");
+      setNotice(
+        `Manual edit ready · ${clipsForReview.length} ${clipsForReview.length === 1 ? "clip" : "clips"}`,
       );
-      setSelectedId(`demo-manual-${manualClips[0].id}`);
-      setNotice(`Manual first cut ready · ${manualClips.length} clips`);
       return;
     }
     if (!projectId || !assetId) {
       setError("Choose a project and recording first");
       return;
     }
-    setBusy("Creating manual first cut");
+    setBusy("Preparing manual export");
     setError("");
     try {
-      const result = await requestJson<{
-        plan: Plan;
-        review_session: ReviewSnapshot["session"];
-      }>(
-        apiUrl,
-        `/api/v1/projects/${projectId}/assets/${assetId}/gaming/manual-highlight-plans`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            brief: {
-              objective: "Keep the manually selected clips",
-              editing_profile: "gameplay_highlights",
-              aspect_ratio: "16:9",
-              style: "Exact human-selected gaming highlights",
-            },
-            clips: manualClips.map((clip) => ({
-              title: clip.title,
-              start_seconds: clip.start,
-              end_seconds: clip.end,
-            })),
-          }),
-        },
-      );
-      await loadCreatedPlan(
-        result,
-        (count) => `Manual first cut ready · ${count} clips`,
-      );
+      const result = await requestManualPlan(clipsForReview);
+      setPlan(result.plan);
+      setReview(null);
+      setHumanReview(null);
+      setManualStage("export");
+      setNotice(`Manual edit ready · choose an export format`);
     } catch (nextError) {
       setError(
         nextError instanceof Error
           ? nextError.message
-          : "Manual first cut failed",
+          : "Manual export could not be prepared",
       );
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function queueFinalPlan(planToRender: Plan) {
+    return await requestJson<RenderJob>(
+      apiUrl,
+      `/api/v1/projects/${projectId}/edit-plans/${planToRender.id}/renders`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          preset: {
+            profile: "final",
+            aspect_ratio: "16:9",
+            frames_per_second: 60,
+            transition_duration_seconds: 0.25,
+            audio_output_mode: "source_mix",
+          },
+        }),
+      },
+    );
+  }
+
+  async function exportManualCut() {
+    const clips = selectedManualClips(manualClips);
+    if (!clips.length) {
+      setError("Add at least one clip before exporting");
+      return;
+    }
+    if (mode === "demo") {
+      const count = manualExportMode === "combined"
+        ? 1
+        : manualExportMode === "separate"
+          ? clips.length
+          : clips.length + 1;
+      setManualExportJobs(
+        Array.from({ length: count }, (_, index) => ({
+          id: `demo-manual-export-${index}`,
+          status: "succeeded",
+          output_path: `/Users/you/Desktop/Cutroom Projects/Demo/Exports/export-${index + 1}.mp4`,
+        }) as RenderJob),
+      );
+      setNotice(`${count} local ${count === 1 ? "export" : "exports"} ready`);
+      return;
+    }
+    if (!plan) {
+      setError("Prepare the manual edit before exporting");
+      return;
+    }
+
+    setBusy("Rendering manual export");
+    setError("");
+    setManualExportJobs([]);
+    try {
+      const plans: Plan[] = [];
+      if (manualExportMode === "combined" || manualExportMode === "both") {
+        plans.push(plan);
+      }
+      if (manualExportMode === "separate" || manualExportMode === "both") {
+        const separateResults = await Promise.all(
+          clips.map((clip) => requestManualPlan([clip])),
+        );
+        plans.push(...separateResults.map((result) => result.plan));
+      }
+      const updateVisibleJob = (nextJob: RenderJob) => {
+        setManualExportJobs((current) => {
+          const exists = current.some((job) => job.id === nextJob.id);
+          return exists
+            ? current.map((job) => (job.id === nextJob.id ? nextJob : job))
+            : [...current, nextJob];
+        });
+      };
+      const completed = await runSequentialTasks(plans, async (planToRender, index) => {
+        setNotice(
+          `Rendering file ${index + 1} of ${plans.length} · completed files stay in Exports`,
+        );
+        const queued = await queueFinalPlan(planToRender);
+        updateVisibleJob(queued);
+        if (index === 0) setFinalJob(queued);
+        return await waitForJob(queued.id, (nextJob) => {
+          updateVisibleJob(nextJob);
+          if (index === 0) setFinalJob(nextJob);
+        });
+      });
+      setManualExportJobs(completed);
+      setFinalJob(completed[0] ?? null);
+      const failures = completed.filter((job) => job.status === "failed");
+      if (completed[0]?.status === "succeeded") setPreviewMode("reel");
+      setNotice(
+        failures.length
+          ? `${failures.length} export failed · the others remain in the project folder`
+          : `${completed.length} ${completed.length === 1 ? "file" : "files"} ready in Exports`,
+      );
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Manual export failed");
     } finally {
       setBusy("");
     }
@@ -1276,16 +2148,17 @@ export default function Home() {
     throw new Error(completed.error ?? "Preview render failed");
   }
 
-  async function waitForJob(jobId: string): Promise<RenderJob> {
-    for (let attempt = 0; attempt < 80; attempt += 1) {
-      const job = await requestJson<RenderJob>(
+  async function waitForJob(
+    jobId: string,
+    onUpdate?: (job: RenderJob) => void,
+  ): Promise<RenderJob> {
+    return await waitForTerminalJob(
+      () => requestJson<RenderJob>(
         apiUrl,
         `/api/v1/jobs/${jobId}`,
-      );
-      if (job.status === "succeeded" || job.status === "failed") return job;
-      await new Promise((resolve) => window.setTimeout(resolve, 750));
-    }
-    throw new Error("Render timed out before reaching a terminal state");
+      ),
+      onUpdate,
+    );
   }
 
   const decide = useCallback(
@@ -1610,9 +2483,9 @@ export default function Home() {
   function selectPreviewMode(nextMode: PreviewMode) {
     setPreviewMode(nextMode);
     window.requestAnimationFrame(() => {
-      if (!previewRef.current || !selected) return;
+      if (!previewRef.current || !previewSelection) return;
       if (nextMode === "source" || nextMode === "cut") {
-        seekPreview(selected.start);
+        seekPreview(previewSelection.start);
       }
     });
   }
@@ -1920,7 +2793,7 @@ export default function Home() {
   }
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell ${manualFocused ? "manual-editing" : ""}`}>
       <header className="topbar">
         <div className="brand-lockup">
           <button
@@ -1940,7 +2813,7 @@ export default function Home() {
           </div>
         </div>
         <nav className="workflow-steps" aria-label="Workflow progress">
-          {workflowSteps.map((step, index) => (
+          {visibleWorkflowSteps.map((step, index) => (
               <span
                 key={step.label}
                 className={`${step.complete ? "complete" : ""} ${
@@ -1961,14 +2834,16 @@ export default function Home() {
                 ? "Local backend"
                 : "Disconnected"}
           </span>
-          <button
-            className="mobile-panel-button"
-            onClick={() => setRightOpen((value) => !value)}
-            aria-label="Toggle evidence inspector"
-            aria-expanded={rightOpen}
-          >
-            Inspect
-          </button>
+          {!manualFocused && (
+            <button
+              className="mobile-panel-button"
+              onClick={() => setRightOpen((value) => !value)}
+              aria-label="Toggle evidence inspector"
+              aria-expanded={rightOpen}
+            >
+              Inspect
+            </button>
+          )}
         </div>
       </header>
 
@@ -2086,7 +2961,9 @@ export default function Home() {
         </section>
       )}
 
-      <div className={`workspace ${setupNeeded ? "setup-hidden" : ""}`}>
+      <div
+        className={`workspace ${setupNeeded ? "setup-hidden" : ""} ${manualFocused ? "manual-focused" : ""}`}
+      >
         <aside className={`left-rail ${leftOpen ? "open" : ""}`}>
           <section className="rail-section">
             <div className="section-heading">
@@ -2223,6 +3100,11 @@ export default function Home() {
                     key={asset.id}
                     className={`source-row ${assetId === asset.id ? "selected" : ""}`}
                     onClick={() => {
+                      if (assetId !== asset.id) {
+                        setManualClips([]);
+                        setManualStage("select");
+                        setActiveManualClipId("");
+                      }
                       void loadProject(projectId, asset.id);
                       setLeftOpen(false);
                     }}
@@ -2266,7 +3148,19 @@ export default function Home() {
                   </small>
                 </div>
               </li>
-              <li className={candidates.length ? "done" : ""}>
+              <li
+                className={
+                  editWorkflow === "manual"
+                    ? manualStage === "export"
+                      ? "done"
+                      : manualClips.length
+                        ? "active"
+                        : ""
+                    : candidates.length
+                      ? "done"
+                      : ""
+                }
+              >
                 <span />
                 <div>
                   <strong>
@@ -2306,12 +3200,26 @@ export default function Home() {
                   </small>
                 </div>
               </li>
-              <li className={reviewReady ? "done" : analysisReady ? "active" : ""}>
+              <li
+                className={
+                  manualFocused
+                    ? ""
+                    : reviewReady
+                      ? "done"
+                      : analysisReady
+                        ? "active"
+                        : ""
+                }
+              >
                 <span />
                 <div>
-                  <strong>Human approval</strong>
+                  <strong>{manualFocused ? "Manual cuts reviewed" : "Human approval"}</strong>
                   <small>
-                    {hasUnsavedTrims
+                    {manualFocused
+                      ? manualStage === "export"
+                        ? "Completed while trimming"
+                        : "Review each clip while trimming"
+                      : hasUnsavedTrims
                       ? "Unsaved trim changes"
                       : planRevisionNeeded
                         ? "New plan version required"
@@ -2321,12 +3229,24 @@ export default function Home() {
                   </small>
                 </div>
               </li>
-              <li className={exportReady ? "done" : reviewReady ? "active" : ""}>
+              <li
+                className={
+                  manualFocused
+                    ? ""
+                    : exportReady
+                      ? "done"
+                      : reviewReady
+                        ? "active"
+                        : ""
+                }
+              >
                 <span />
                 <div>
-                  <strong>Final output</strong>
+                  <strong>{manualFocused ? "Local export" : "Final output"}</strong>
                   <small>
-                    {finalJob?.status
+                    {manualFocused && manualExportReady
+                      ? `${manualExportJobs.length} file${manualExportJobs.length === 1 ? "" : "s"} ready`
+                      : finalJob?.status
                       ? statusLabel(finalJob.status)
                       : "Not rendered"}
                   </small>
@@ -2386,7 +3306,9 @@ export default function Home() {
           )}
         </aside>
 
-        <section className="editor">
+        <section
+          className={`editor ${manualFocused && manualStage === "edit" ? "manual-trim-layout" : ""}`}
+        >
           <div className="editor-header">
             <div>
               <span className="eyebrow">League of Legends · Gameplay highlights</span>
@@ -2414,7 +3336,13 @@ export default function Home() {
                       : "unapproved"
                 }
               >
-                {hasUnsavedTrims
+                {manualFocused
+                  ? manualStage === "export"
+                    ? manualExportReady
+                      ? "Export ready"
+                      : "Ready to export"
+                    : "Manual editing"
+                  : hasUnsavedTrims
                   ? "Unsaved trim"
                   : planRevisionNeeded
                     ? "Revision needed"
@@ -2448,6 +3376,7 @@ export default function Home() {
             </section>
           )}
 
+          {(editWorkflow === "automation" || manualStage === "select") && (
           <section className="workflow-panel" aria-labelledby="workflow-mode-title">
             <div className="workflow-panel-heading">
               <div>
@@ -2459,7 +3388,11 @@ export default function Home() {
             <div className="workflow-choice-grid">
               <button
                 className={editWorkflow === "manual" ? "selected" : ""}
-                onClick={() => setEditWorkflow("manual")}
+                onClick={() => {
+                  setEditWorkflow("manual");
+                  setManualStage("select");
+                  setPreviewMode("source");
+                }}
                 aria-pressed={editWorkflow === "manual"}
               >
                 <strong>Manual</strong>
@@ -2474,7 +3407,7 @@ export default function Home() {
                 <span>Find visible League kills and merge nearby kills. No LLM.</span>
               </button>
             </div>
-            <div className="ai-setting">
+            {editWorkflow === "automation" && <div className="ai-setting">
               <div>
                 <strong>AI assistance</strong>
                 <small>
@@ -2507,48 +3440,32 @@ export default function Home() {
                     ? "Independent AI review is ready after preview rendering."
                     : "Review mode is saved, but no local reviewer model is configured yet."}
               </small>
-            </div>
+            </div>}
           </section>
+          )}
 
+          {editWorkflow === "automation" && (
           <section className="brief-panel" aria-labelledby="brief-title">
             <div className="brief-heading">
               <div>
-                <span className="eyebrow">
-                  {editWorkflow === "automation"
-                    ? "Deterministic automation"
-                    : "Manual first cut"}
-                </span>
-                <h2 id="brief-title">
-                  {editWorkflow === "automation"
-                    ? "Kill & teamfight detection"
-                    : "Add the exact moments you want to keep"}
-                </h2>
+                <span className="eyebrow">Deterministic automation</span>
+                <h2 id="brief-title">Kill &amp; teamfight detection</h2>
               </div>
               <button
                 className="primary-button"
-                onClick={
-                  editWorkflow === "automation"
-                    ? runAnalysis
-                    : createManualFirstCut
-                }
+                onClick={runAnalysis}
                 disabled={
                   Boolean(busy) ||
                   !sourceReady ||
-                  (editWorkflow === "manual" && manualClips.length === 0) ||
-                  (editWorkflow === "automation" && !automationReady)
+                  !automationReady
                 }
               >
-                {editWorkflow === "automation"
-                  ? busy === "Analysing recording"
-                    ? "Analysing…"
-                    : "Detect kills & teamfights"
-                  : busy === "Creating manual first cut"
-                    ? "Creating…"
-                    : "Create manual first cut"}
+                {busy === "Analysing recording"
+                  ? "Analysing…"
+                  : "Detect kills & teamfights"}
               </button>
             </div>
-            {editWorkflow === "automation" ? (
-              <>
+            <>
                 <div className="detector-summary">
                   <div>
                     <span className="detector-icon">K</span>
@@ -2643,124 +3560,59 @@ export default function Home() {
                   </span>
                 </div>
               </>
-            ) : (
-              <>
-                <form className="manual-clip-form" onSubmit={addManualClip}>
-                  <label>
-                    Clip name
-                    <input
-                      value={manualDraft.title}
-                      onChange={(event) =>
-                        setManualDraft((current) => ({
-                          ...current,
-                          title: event.target.value,
-                        }))
-                      }
-                    />
-                  </label>
-                  <label>
-                    In <small>MM:SS.s</small>
-                    <input
-                      value={manualDraft.start}
-                      placeholder="00:10.0"
-                      onChange={(event) =>
-                        setManualDraft((current) => ({
-                          ...current,
-                          start: event.target.value,
-                        }))
-                      }
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    className="text-button manual-playhead"
-                    onClick={() =>
-                      setManualDraft((current) => ({
-                        ...current,
-                        start: formatTimestamp(playheadSeconds),
-                      }))
-                    }
-                  >
-                    Use playhead
-                  </button>
-                  <label>
-                    Out <small>MM:SS.s</small>
-                    <input
-                      value={manualDraft.end}
-                      placeholder="00:25.0"
-                      onChange={(event) =>
-                        setManualDraft((current) => ({
-                          ...current,
-                          end: event.target.value,
-                        }))
-                      }
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    className="text-button manual-playhead"
-                    onClick={() =>
-                      setManualDraft((current) => ({
-                        ...current,
-                        end: formatTimestamp(playheadSeconds),
-                      }))
-                    }
-                  >
-                    Use playhead
-                  </button>
-                  <button className="secondary-button">Add clip</button>
-                </form>
-                <div className="manual-clip-list" aria-live="polite">
-                  {manualClips.length ? (
-                    manualClips.map((clip, index) => (
-                      <div key={clip.id}>
-                        <span>{index + 1}</span>
-                        <strong>{clip.title}</strong>
-                        <small>
-                          {formatTimestamp(clip.start)}–{formatTimestamp(clip.end)}
-                        </small>
-                        <button
-                          className="text-button"
-                          onClick={() =>
-                            setManualClips((current) =>
-                              current.filter((item) => item.id !== clip.id),
-                            )
-                          }
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    ))
-                  ) : (
-                    <p>
-                      Play the source below, add one or more ranges, then create
-                      the first cut. Manual mode does not need Tesseract or AI.
-                    </p>
-                  )}
-                </div>
-              </>
-            )}
           </section>
+          )}
 
           <section className="preview-workspace" aria-label="Video preview">
             <div className="preview-toolbar">
               <div>
                 <span className="eyebrow">Preview</span>
                 <strong>
-                  {previewMode === "source"
+                  {manualFocused && manualStage === "select"
+                    ? "Find the moments you remember"
+                    : manualFocused && manualStage === "edit"
+                      ? activeManualClip?.title ?? "Selected clip"
+                      : manualFocused && manualStage === "export"
+                        ? manualExportReady ? "Finished video" : "Your trimmed cut"
+                      : previewMode === "source"
                     ? "Source overview"
                     : previewMode === "cut"
                       ? "Selected cut"
                       : "Generated reel"}
                 </strong>
                 <small>
-                  {previewMode === "source"
+                  {manualFocused && manualStage === "select"
+                    ? "Scrub and pause near the action, then mark the play below."
+                    : manualFocused && manualStage === "edit"
+                      ? "Playback loops inside the active In and Out points."
+                      : manualFocused && manualStage === "export"
+                        ? manualExportReady
+                          ? "Your local export is ready."
+                          : "Choose an export format below. Nothing will be uploaded."
+                      : previewMode === "source"
                     ? "Inspect the full recording around every detection."
                     : previewMode === "cut"
                       ? "Playback is limited to the current In and Out points."
                       : "Watch the combined result after rendering."}
                 </small>
               </div>
+              <div className="preview-toolbar-actions">
+              {manualFocused && manualStage === "edit" && activeManualClip && (
+                <output className="manual-preview-time" aria-live="polite">
+                  <span>Preview position</span>
+                  <strong>{formatTimestamp(playheadSeconds)}</strong>
+                </output>
+              )}
+              {manualFocused && manualStage === "select" && (
+                <button
+                  className="primary-button manual-quick-mark"
+                  onClick={markManualPlay}
+                  disabled={!sourceReady || Boolean(busy)}
+                >
+                  <span aria-hidden="true">✂</span>
+                  Mark play at {formatTimestamp(playheadSeconds)}
+                </button>
+              )}
               <div className="preview-switch" role="group" aria-label="Preview mode">
                 <button
                   className={previewMode === "source" ? "active" : ""}
@@ -2782,6 +3634,7 @@ export default function Home() {
                   Generated reel
                 </button>
               </div>
+              </div>
             </div>
 
             <div className="viewer">
@@ -2793,19 +3646,19 @@ export default function Home() {
                   preload="metadata"
                   src={activeMediaUrl}
                   onLoadedMetadata={() => {
-                    if (previewMode !== "reel" && selected) {
-                      seekPreview(selected.start);
+                    if (previewMode !== "reel" && previewSelection) {
+                      seekPreview(previewSelection.start);
                     }
                   }}
                   onPlay={() => {
                     if (
                       previewMode === "cut" &&
-                      selected &&
+                      previewSelection &&
                       previewRef.current &&
-                      (previewRef.current.currentTime < selected.start ||
-                        previewRef.current.currentTime >= selected.end)
+                      (previewRef.current.currentTime < previewSelection.start ||
+                        previewRef.current.currentTime >= previewSelection.end)
                     ) {
-                      seekPreview(selected.start);
+                      seekPreview(previewSelection.start);
                     }
                   }}
                   onTimeUpdate={() => {
@@ -2814,12 +3667,12 @@ export default function Home() {
                     }
                     if (
                       previewMode === "cut" &&
-                      selected &&
+                      previewSelection &&
                       previewRef.current &&
-                      previewRef.current.currentTime >= selected.end
+                      previewRef.current.currentTime >= previewSelection.end
                     ) {
                       previewRef.current.pause();
-                      seekPreview(selected.start);
+                      seekPreview(previewSelection.start);
                     }
                   }}
                   onError={() =>
@@ -2889,12 +3742,13 @@ export default function Home() {
                           ? "Current cut"
                           : "Generated reel"}
                     </span>
-                    <strong>{selected?.title ?? "Select a highlight"}</strong>
+                    <strong>{previewSelection?.title ?? "Select a highlight"}</strong>
                   </div>
                 </div>
               )}
             </div>
-            {previewMode !== "reel" && (
+            {previewMode !== "reel" &&
+              !(manualFocused && manualStage === "edit") && (
               <div className="source-scrubber">
                 <div className="source-scrubber-heading">
                   <span>
@@ -2908,11 +3762,11 @@ export default function Home() {
                 </div>
                 <div className="source-scrub-track">
                   <div className="source-detections" aria-hidden="true">
-                    {candidates.map((candidate) => (
+                    {sourceMarkers.map((candidate) => (
                       <span
                         key={candidate.id}
                         className={`${candidate.decision} ${
-                          candidate.id === selected?.id ? "selected" : ""
+                          candidate.id === previewSelection?.id ? "selected" : ""
                         }`}
                         style={{
                           left: `${(candidate.start / sourceDuration) * 100}%`,
@@ -2943,12 +3797,86 @@ export default function Home() {
             )}
           </section>
 
+          {editWorkflow === "manual" && manualStage !== "export" && (
+            <ManualWorkbench
+              stage={manualStage}
+              clips={manualClips}
+              activeClipId={activeManualClipId}
+              playheadSeconds={playheadSeconds}
+              sourceDuration={sourceDuration}
+              busy={Boolean(busy)}
+              onStageChange={(nextStage) => {
+                if (nextStage === "edit") {
+                  const first =
+                    selectedManual.find(
+                      (clip) => clip.id === activeManualClipId,
+                    ) ?? selectedManual[0];
+                  if (!first) return;
+                  setActiveManualClipId(first.id);
+                  setPreviewMode("cut");
+                  window.requestAnimationFrame(() => {
+                    seekPreview(first.start);
+                    window.scrollTo({ top: 0, behavior: "auto" });
+                  });
+                } else {
+                  setPreviewMode("source");
+                }
+                setManualStage(nextStage);
+                setRightOpen(false);
+              }}
+              onMarkPlay={markManualPlay}
+              onToggleClip={(id) => {
+                setManualClips((current) =>
+                  current.map((clip) =>
+                    clip.id === id
+                      ? { ...clip, selected: !clip.selected }
+                      : clip,
+                  ),
+                );
+              }}
+              onSelectClip={setActiveManualClipId}
+              onUpdateClip={updateManualClip}
+              onRemoveClip={removeManualClip}
+              onSplitClip={splitManualClip}
+              onSeek={seekPreview}
+              onPrepareExport={() => void prepareManualExport()}
+            />
+          )}
+
+          {editWorkflow === "manual" && manualStage === "export" && (
+            <ManualExportPanel
+              clips={selectedManual}
+              exportMode={manualExportMode}
+              jobs={manualExportJobs}
+              projectPath={projects.find((project) => project.id === projectId)?.workspace_path?.toString()}
+              busy={Boolean(busy)}
+              onModeChange={(nextMode) => {
+                setManualExportMode(nextMode);
+                setManualExportJobs([]);
+              }}
+              onExport={() => void exportManualCut()}
+              onBack={() => {
+                setManualStage("edit");
+                setManualExportJobs([]);
+                setPreviewMode("cut");
+                const first = selectedManual[0];
+                if (first) {
+                  setActiveManualClipId(first.id);
+                  window.requestAnimationFrame(() => seekPreview(first.start));
+                }
+              }}
+              onReveal={(job) => void revealRenderOutput(job)}
+            />
+          )}
+
+          {editWorkflow === "automation" && (
           <section className="timeline" aria-labelledby="timeline-title">
             <div className="timeline-header">
               <div>
                 <span className="eyebrow">Review detected clips</span>
                 <h2 id="timeline-title">
-                  {candidates.length} proposed clips · {formatTime(reelDuration)}
+                  {candidates.length} proposed {candidates.length === 1 ? "clip" : "clips"} ·{" "}
+                  {formatTime(reelDuration)}
                 </h2>
                 <small className={hasUnsavedTrims ? "unsaved-copy" : ""}>
                   {hasUnsavedTrims
@@ -3236,6 +4164,7 @@ export default function Home() {
               ))}
             </div>
           </section>
+          )}
         </section>
 
         <aside className={`inspector ${rightOpen ? "open" : ""}`}>
@@ -3473,14 +4402,19 @@ export default function Home() {
         </aside>
       </div>
 
-      <footer className={`approval-bar ${setupNeeded ? "setup-hidden" : ""}`}>
+      <footer
+        className={`approval-bar ${setupNeeded ? "setup-hidden" : ""} ${manualFocused ? "manual-editing" : ""}`}
+      >
         <div className="approval-summary" role="status" aria-live="polite">
           <span className={error ? "error-indicator" : "status-indicator"} />
           <div>
             <strong>{error || busy || notice}</strong>
             <small>
-              {acceptedCount} kept · {rejectedCount} rejected · {pendingCount} pending
-              {finalJob ? ` · Final ${statusLabel(finalJob.status)}` : ""}
+              {manualFocused
+                ? `${selectedManual.length} plays selected · ${formatTimestamp(totalManualDuration(manualClips))}`
+                : `${acceptedCount} kept · ${rejectedCount} rejected · ${pendingCount} pending${
+                    finalJob ? ` · Final ${statusLabel(finalJob.status)}` : ""
+                  }`}
             </small>
           </div>
           {error && (
@@ -3489,7 +4423,7 @@ export default function Home() {
             </button>
           )}
         </div>
-        <div className="approval-actions">
+        {!manualFocused && <div className="approval-actions">
           {finalJob?.status === "succeeded" && (
             <div className="output-actions" aria-label="Final output actions">
               <button
@@ -3557,7 +4491,7 @@ export default function Home() {
           >
             Render final
           </button>
-        </div>
+        </div>}
       </footer>
     </main>
   );

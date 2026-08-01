@@ -656,6 +656,6 @@ def download_job_media(job_id: UUID, request: Request) -> FileResponse:
     return FileResponse(
         output,
         media_type="video/mp4",
-        filename=f"cutroom-{job.id}.mp4",
+        filename=output.name,
         content_disposition_type="attachment",
     )

@@ -19,4 +19,6 @@ test("sandboxed desktop preload uses Electron's supported CommonJS format", asyn
   assert.match(preloadSource, /desktop:select-folder/);
   assert.match(mainSource, /properties: \["openDirectory"\]/);
   assert.match(mainSource, /Choose an existing video folder/);
+  assert.match(mainSource, /Cutroom Projects/);
+  assert.match(mainSource, /projectsDirectory/);
 });

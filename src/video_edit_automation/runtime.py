@@ -79,7 +79,7 @@ def build_container(
         ffprobe_binary=settings.ffprobe_binary,
         video_codec=settings.video_codec,
     )
-    workspace = WorkspaceManager(settings.data_dir)
+    workspace = WorkspaceManager(settings.data_dir, settings.projects_dir)
     repository.initialize()
     workspace.initialize()
 

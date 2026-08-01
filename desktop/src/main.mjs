@@ -64,7 +64,7 @@ async function realContainedPath(root, candidate) {
   }
 }
 
-function registerNativeBridge({ appDataDirectory, mediaRoots }) {
+function registerNativeBridge({ appDataDirectory, projectsDirectory, mediaRoots }) {
   ipcMain.handle("desktop:bootstrap", () => ({ apiUrl: backendUrl }));
   ipcMain.handle("desktop:select-media", async (_event, requestedDefaultPath) => {
     const defaultPath = (
@@ -121,10 +121,14 @@ function registerNativeBridge({ appDataDirectory, mediaRoots }) {
     return { path: permitted, name: path.basename(permitted) };
   });
   ipcMain.handle("desktop:reveal-output", async (_event, outputPath) => {
-    const renderRoot = path.join(appDataDirectory, "projects");
-    const permitted = await realContainedPath(renderRoot, outputPath);
+    const permitted = (
+      await Promise.all([
+        realContainedPath(projectsDirectory, outputPath),
+        realContainedPath(path.join(appDataDirectory, "projects"), outputPath),
+      ])
+    ).find(Boolean);
     if (!permitted || path.extname(permitted).toLowerCase() !== ".mp4") {
-      throw new Error("The requested output is outside Cutroom's managed render folder");
+      throw new Error("The requested output is outside a Cutroom project folder");
     }
     shell.showItemInFolder(permitted);
     return true;
@@ -134,6 +138,7 @@ function registerNativeBridge({ appDataDirectory, mediaRoots }) {
 async function startDesktop() {
   const backendPort = await findAvailablePort();
   const appDataDirectory = app.getPath("userData");
+  const projectsDirectory = path.join(app.getPath("desktop"), "Cutroom Projects");
   const mediaRoots = defaultMediaRoots(os.homedir());
   backendUrl = `http://127.0.0.1:${backendPort}`;
   let uiUrl = process.env.VEA_DESKTOP_UI_URL;
@@ -145,6 +150,7 @@ async function startDesktop() {
   const validatedUiUrl = assertLoopbackUrl(uiUrl);
   const backend = backendLaunch({
     appDataDirectory,
+    projectsDirectory,
     backendPort,
     dashboardOrigin: validatedUiUrl.origin,
     mediaRoots,
@@ -172,7 +178,7 @@ async function startDesktop() {
   }
 
   const allowedUiOrigin = validatedUiUrl.origin;
-  registerNativeBridge({ appDataDirectory, mediaRoots });
+  registerNativeBridge({ appDataDirectory, projectsDirectory, mediaRoots });
   mainWindow = new BrowserWindow({
     width: 1480,
     height: 960,

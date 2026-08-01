@@ -6,6 +6,7 @@ import {
   assertLoopbackUrl,
   backendLaunch,
   defaultMediaRoots,
+  desktopExecutablePath,
   frontendLaunch,
   isPathInside,
   waitForHttp,
@@ -46,9 +47,29 @@ test("default media roots remain intentionally narrow", () => {
   ]);
 });
 
+test("packaged macOS apps can find common media-tool installations", () => {
+  assert.equal(
+    desktopExecutablePath({
+      resourcesPath: "/Applications/Cutroom.app/Contents/Resources",
+      packaged: true,
+      platform: "darwin",
+      environment: { PATH: "/usr/bin:/bin" },
+    }),
+    [
+      "/Applications/Cutroom.app/Contents/Resources/media-tools",
+      "/opt/homebrew/bin",
+      "/usr/local/bin",
+      "/opt/local/bin",
+      "/usr/bin",
+      "/bin",
+    ].join(path.delimiter),
+  );
+});
+
 test("development backend launch uses argument lists and desktop-owned data", () => {
   const launch = backendLaunch({
     appDataDirectory: "/tmp/cutroom-data",
+    projectsDirectory: "/Users/editor/Desktop/Cutroom Projects",
     backendPort: 43123,
     dashboardOrigin: "http://127.0.0.1:4179",
     mediaRoots: ["/Users/editor/Movies"],
@@ -69,16 +90,22 @@ test("development backend launch uses argument lists and desktop-owned data", ()
   ]);
   assert.equal(launch.cwd, "/repo");
   assert.equal(launch.env.VEA_DATA_DIR, "/tmp/cutroom-data");
+  assert.equal(
+    launch.env.VEA_PROJECTS_DIR,
+    "/Users/editor/Desktop/Cutroom Projects",
+  );
   assert.equal(launch.env.VEA_ALLOWED_MEDIA_ROOTS, '["/Users/editor/Movies"]');
   assert.equal(
     launch.env.VEA_DASHBOARD_ALLOWED_ORIGINS,
     '["http://127.0.0.1:4179"]',
   );
+  assert.equal(launch.env.PATH, "");
 });
 
 test("packaged backend resolves to a bundled executable", () => {
   const launch = backendLaunch({
     appDataDirectory: "/tmp/cutroom-data",
+    projectsDirectory: "/Users/editor/Desktop/Cutroom Projects",
     backendPort: 43123,
     dashboardOrigin: "http://127.0.0.1:4179",
     mediaRoots: [],
@@ -93,6 +120,11 @@ test("packaged backend resolves to a bundled executable", () => {
     "/Applications/Cutroom.app/Contents/Resources/backend/video-edit-automation",
   );
   assert.deepEqual(launch.args, []);
+  assert.match(
+    launch.env.PATH,
+    /^\/Applications\/Cutroom\.app\/Contents\/Resources\/media-tools:/,
+  );
+  assert.match(launch.env.PATH, /\/opt\/homebrew\/bin/);
 });
 
 test("frontend launch is explicit and does not use a shell command", () => {

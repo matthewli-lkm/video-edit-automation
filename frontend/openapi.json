@@ -3078,6 +3078,18 @@
             "minLength": 1,
             "title": "Name",
             "type": "string"
+          },
+          "workspace_path": {
+            "anyOf": [
+              {
+                "format": "path",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Path"
           }
         },
         "required": [

@@ -12,6 +12,23 @@ export function defaultMediaRoots(homeDirectory) {
   );
 }
 
+export function desktopExecutablePath({
+  resourcesPath,
+  packaged,
+  platform = process.platform,
+  environment = process.env,
+}) {
+  const entries = [];
+  if (packaged) {
+    entries.push(path.join(resourcesPath, "media-tools"));
+    if (platform === "darwin") {
+      entries.push("/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin");
+    }
+  }
+  entries.push(...(environment.PATH ?? "").split(path.delimiter));
+  return [...new Set(entries.filter(Boolean))].join(path.delimiter);
+}
+
 export function assertLoopbackUrl(value) {
   const url = new URL(value);
   if (
@@ -72,6 +89,7 @@ export async function waitForHttp(
 
 export function backendLaunch({
   appDataDirectory,
+  projectsDirectory,
   backendPort,
   dashboardOrigin,
   mediaRoots,
@@ -103,9 +121,16 @@ export function backendLaunch({
     cwd: packaged ? resourcesPath : repositoryRoot,
     env: {
       ...environment,
+      PATH: desktopExecutablePath({
+        resourcesPath,
+        packaged,
+        platform,
+        environment,
+      }),
       VEA_HOST: "127.0.0.1",
       VEA_PORT: String(backendPort),
       VEA_DATA_DIR: appDataDirectory,
+      VEA_PROJECTS_DIR: projectsDirectory,
       VEA_ALLOWED_MEDIA_ROOTS: JSON.stringify(mediaRoots),
       VEA_DASHBOARD_ALLOWED_ORIGINS: JSON.stringify([dashboardOrigin]),
     },

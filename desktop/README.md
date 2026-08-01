@@ -9,10 +9,11 @@ This package is the completed Batch 3 / G2g desktop-integration slice. One Elect
 5. opens a sandboxed desktop window with a minimal native bridge; and
 6. terminates both child processes when the application exits.
 
-The bridge exposes only three operations: read the generated backend address, select a recording
-from Movies/Desktop/Downloads, and reveal a completed MP4 inside Cutroom's managed project
-workspace. The renderer has no Node.js access and cannot execute commands or reveal arbitrary
-paths.
+The bridge exposes only four operations: read the generated backend address, select a recording,
+select an existing video folder from Movies/Desktop/Downloads, and reveal a completed MP4 inside
+Cutroom's managed project workspace. New projects are named folders under
+`~/Desktop/Cutroom Projects`, and finished files are saved in each project's `Exports` folder. The
+renderer has no Node.js access and cannot execute commands or reveal arbitrary paths.
 
 Development launches the repository's Python and dashboard processes. Packaged builds instead use a
 single-file Python sidecar and a production dashboard runtime stored inside the application.

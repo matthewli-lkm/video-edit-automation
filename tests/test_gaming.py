@@ -337,29 +337,16 @@ def test_manual_workflow_creates_exact_evidence_linked_review_plan(
         payload["analysis"]["signals"][0]["id"]
     ]
 
-    review_url = (
-        f"/api/v1/projects/{project['id']}/gaming/highlight-reviews/"
-        f"{payload['review_session']['id']}"
-    )
-    for candidate in payload["review_session"]["candidates"]:
-        decision = client.post(
-            f"{review_url}/decisions",
-            json={"action": "accept", "candidate_id": candidate["id"]},
-        )
-        assert decision.status_code == 201
-    approval = client.post(
-        f"{review_url}/human-review/approval",
-        json={
-            "plan_id": payload["plan"]["id"],
-            "plan_version": payload["plan"]["version"],
-        },
-    )
-    assert approval.status_code == 201
+    # Manual users already reviewed these exact ranges while trimming, so only
+    # detector/AI plans require the separate review-and-approval gate.
     final_render = client.post(
         f"/api/v1/projects/{project['id']}/edit-plans/{payload['plan']['id']}/renders",
         json={"preset": {"profile": "final", "aspect_ratio": "16:9"}},
     )
     assert final_render.status_code == 202
+    output = Path(final_render.json()["output_path"])
+    assert output.parent.name == "Exports"
+    assert output.name.startswith("Manual first cut highlight reel--")
 
 
 def test_manual_workflow_rejects_overlapping_clips(
