@@ -6,6 +6,9 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+from video_edit_automation.application.automatic_gaming import (
+    AutomaticGamingHighlightService,
+)
 from video_edit_automation.application.gaming import GamingHighlightService, HighlightScorer
 from video_edit_automation.domain.gaming import (
     GameContext,
@@ -125,6 +128,44 @@ def test_gaming_duration_is_a_maximum_and_shorter_edits_are_valid() -> None:
         ["second"],
     ]
     assert sum(candidate.duration_seconds for candidate in below_limit) == 65
+
+
+def test_automatic_workflow_keeps_only_kill_and_teamfight_evidence() -> None:
+    asset = _asset()
+    signals = [
+        HighlightSignal(
+            id="audio",
+            asset_id=asset.id,
+            timestamp_seconds=10,
+            signal_type=HighlightSignalType.AUDIO_PEAK,
+            event_name="fight_audio_peak",
+        ),
+        HighlightSignal(
+            id="objective",
+            asset_id=asset.id,
+            timestamp_seconds=20,
+            signal_type=HighlightSignalType.GAME_EVENT,
+            event_name="objective",
+        ),
+        HighlightSignal(
+            id="kill",
+            asset_id=asset.id,
+            timestamp_seconds=30,
+            signal_type=HighlightSignalType.GAME_EVENT,
+            event_name="champion_kill",
+        ),
+        HighlightSignal(
+            id="teamfight",
+            asset_id=asset.id,
+            timestamp_seconds=35,
+            signal_type=HighlightSignalType.GAME_EVENT,
+            event_name="team_fight",
+        ),
+    ]
+
+    filtered = AutomaticGamingHighlightService._automation_signals(signals)
+
+    assert [signal.id for signal in filtered] == ["kill", "teamfight"]
 
 
 def test_gaming_profile_api_creates_evidence_linked_plan(
@@ -254,3 +295,82 @@ def test_automatic_league_analysis_reports_missing_local_tools(
 
     assert response.status_code == 503
     assert response.json()["error_type"] == "AnalyzerUnavailableError"
+
+
+def test_manual_workflow_creates_exact_evidence_linked_review_plan(
+    client: TestClient,
+    media_root: Path,
+) -> None:
+    project = client.post("/api/v1/projects", json={"name": "Manual edit"}).json()
+    source = media_root / "manual-session.mp4"
+    source.write_bytes(b"fake gameplay")
+    asset = client.post(
+        f"/api/v1/projects/{project['id']}/assets/import",
+        json={"local_path": str(source)},
+    ).json()
+
+    response = client.post(
+        f"/api/v1/projects/{project['id']}/assets/{asset['id']}/gaming/manual-highlight-plans",
+        json={
+            "brief": {"objective": "Keep only the moments I chose"},
+            "clips": [
+                {"title": "Opening fight", "start_seconds": 1, "end_seconds": 3},
+                {"title": "Final push", "start_seconds": 5, "end_seconds": 8},
+            ],
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["analysis"]["analyzer"] == "manual-selection"
+    assert [signal["signal_type"] for signal in payload["analysis"]["signals"]] == [
+        "manual_marker",
+        "manual_marker",
+    ]
+    assert payload["plan"]["generated_by"] == "manual-workflow"
+    assert [
+        (segment["source_in_seconds"], segment["source_out_seconds"])
+        for segment in payload["plan"]["segments"]
+    ] == [(1, 3), (5, 8)]
+    assert len(payload["review_session"]["candidates"]) == 2
+    assert payload["review_session"]["candidates"][0]["signal_ids"] == [
+        payload["analysis"]["signals"][0]["id"]
+    ]
+
+    # Manual users already reviewed these exact ranges while trimming, so only
+    # detector/AI plans require the separate review-and-approval gate.
+    final_render = client.post(
+        f"/api/v1/projects/{project['id']}/edit-plans/{payload['plan']['id']}/renders",
+        json={"preset": {"profile": "final", "aspect_ratio": "16:9"}},
+    )
+    assert final_render.status_code == 202
+    output = Path(final_render.json()["output_path"])
+    assert output.parent.name == "Exports"
+    assert output.name.startswith("Manual first cut highlight reel--")
+
+
+def test_manual_workflow_rejects_overlapping_clips(
+    client: TestClient,
+    media_root: Path,
+) -> None:
+    project = client.post("/api/v1/projects", json={"name": "Manual overlap"}).json()
+    source = media_root / "manual-overlap.mp4"
+    source.write_bytes(b"fake gameplay")
+    asset = client.post(
+        f"/api/v1/projects/{project['id']}/assets/import",
+        json={"local_path": str(source)},
+    ).json()
+
+    response = client.post(
+        f"/api/v1/projects/{project['id']}/assets/{asset['id']}/gaming/manual-highlight-plans",
+        json={
+            "brief": {"objective": "Keep exact ranges"},
+            "clips": [
+                {"title": "First", "start_seconds": 1, "end_seconds": 4},
+                {"title": "Second", "start_seconds": 3, "end_seconds": 6},
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert "cannot overlap" in response.json()["detail"]

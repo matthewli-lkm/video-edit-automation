@@ -10,10 +10,12 @@ from video_edit_automation.domain.capture import (
     CapturePlatform,
     CaptureRecorder,
 )
+from video_edit_automation.domain.diagnostics import DesktopDiagnostics
 from video_edit_automation.domain.gaming import (
     HighlightAnalysis,
     HighlightCandidate,
     HighlightSignal,
+    ManualHighlightClip,
 )
 from video_edit_automation.domain.models import (
     AudioTrackRoleAssignment,
@@ -107,6 +109,16 @@ class AutomaticGamingHighlightPlanResponse(GamingHighlightPlanResponse):
     review_session: HighlightReviewSession
 
 
+class ManualGamingHighlightPlanRequest(ApiModel):
+    brief: EditBrief
+    clips: list[ManualHighlightClip] = Field(min_length=1, max_length=100)
+
+
+class ManualGamingHighlightPlanResponse(GamingHighlightPlanResponse):
+    analysis: HighlightAnalysis
+    review_session: HighlightReviewSession
+
+
 class HighlightReviewSnapshotResponse(ApiModel):
     session: HighlightReviewSession
     decisions: list[HighlightReviewDecision]
@@ -152,3 +164,7 @@ class HealthResponse(ApiModel):
     local_planner: str
     gaming_analyzer: str
     highlight_reviewer: str
+
+
+class DesktopDiagnosticsResponse(DesktopDiagnostics):
+    pass

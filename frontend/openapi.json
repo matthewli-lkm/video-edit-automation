@@ -745,6 +745,114 @@
         "title": "CaptureSessionHighlightPlanRequest",
         "type": "object"
       },
+      "DependencyDiagnostic": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "unavailable",
+              "error"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "name",
+          "status"
+        ],
+        "title": "DependencyDiagnostic",
+        "type": "object"
+      },
+      "DesktopDiagnosticsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "database": {
+            "enum": [
+              "ready",
+              "unavailable"
+            ],
+            "title": "Database",
+            "type": "string"
+          },
+          "ffmpeg": {
+            "$ref": "#/components/schemas/DependencyDiagnostic"
+          },
+          "ffprobe": {
+            "$ref": "#/components/schemas/DependencyDiagnostic"
+          },
+          "highlight_reviewer": {
+            "enum": [
+              "ready",
+              "disabled",
+              "unavailable"
+            ],
+            "title": "Highlight Reviewer",
+            "type": "string"
+          },
+          "local_planner": {
+            "enum": [
+              "configured",
+              "disabled"
+            ],
+            "title": "Local Planner",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "degraded"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "tesseract": {
+            "$ref": "#/components/schemas/DependencyDiagnostic"
+          },
+          "workspace": {
+            "enum": [
+              "ready",
+              "unavailable"
+            ],
+            "title": "Workspace",
+            "type": "string"
+          },
+          "workspace_free_bytes": {
+            "minimum": 0.0,
+            "title": "Workspace Free Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status",
+          "database",
+          "workspace",
+          "workspace_free_bytes",
+          "ffmpeg",
+          "ffprobe",
+          "tesseract",
+          "local_planner",
+          "highlight_reviewer"
+        ],
+        "title": "DesktopDiagnosticsResponse",
+        "type": "object"
+      },
       "DetectedGame": {
         "additionalProperties": false,
         "properties": {
@@ -2658,6 +2766,89 @@
         "title": "ManualBookmarkInput",
         "type": "object"
       },
+      "ManualGamingHighlightPlanRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "brief": {
+            "$ref": "#/components/schemas/EditBrief"
+          },
+          "clips": {
+            "items": {
+              "$ref": "#/components/schemas/ManualHighlightClip"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Clips",
+            "type": "array"
+          }
+        },
+        "required": [
+          "brief",
+          "clips"
+        ],
+        "title": "ManualGamingHighlightPlanRequest",
+        "type": "object"
+      },
+      "ManualGamingHighlightPlanResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "analysis": {
+            "$ref": "#/components/schemas/HighlightAnalysis"
+          },
+          "plan": {
+            "$ref": "#/components/schemas/EditPlan"
+          },
+          "review_session": {
+            "$ref": "#/components/schemas/HighlightReviewSession"
+          },
+          "selected_candidates": {
+            "items": {
+              "$ref": "#/components/schemas/HighlightCandidate"
+            },
+            "title": "Selected Candidates",
+            "type": "array"
+          },
+          "validation": {
+            "$ref": "#/components/schemas/PlanValidationReport"
+          }
+        },
+        "required": [
+          "plan",
+          "validation",
+          "selected_candidates",
+          "analysis",
+          "review_session"
+        ],
+        "title": "ManualGamingHighlightPlanResponse",
+        "type": "object"
+      },
+      "ManualHighlightClip": {
+        "additionalProperties": false,
+        "properties": {
+          "end_seconds": {
+            "exclusiveMinimum": 0.0,
+            "title": "End Seconds",
+            "type": "number"
+          },
+          "start_seconds": {
+            "minimum": 0.0,
+            "title": "Start Seconds",
+            "type": "number"
+          },
+          "title": {
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "start_seconds",
+          "end_seconds"
+        ],
+        "title": "ManualHighlightClip",
+        "type": "object"
+      },
       "MediaAsset": {
         "additionalProperties": false,
         "properties": {
@@ -2887,6 +3078,18 @@
             "minLength": 1,
             "title": "Name",
             "type": "string"
+          },
+          "workspace_path": {
+            "anyOf": [
+              {
+                "format": "path",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Path"
           }
         },
         "required": [
@@ -3191,7 +3394,7 @@
   "info": {
     "description": "Local-first API for validated, AI-assisted video edit decisions.",
     "title": "Video Edit Automation",
-    "version": "0.1.0"
+    "version": "0.3.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -3229,6 +3432,24 @@
           }
         },
         "summary": "Capture Inbox Status"
+      }
+    },
+    "/api/v1/desktop/diagnostics": {
+      "get": {
+        "operationId": "desktop_diagnostics_api_v1_desktop_diagnostics_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DesktopDiagnosticsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Desktop Diagnostics"
       }
     },
     "/api/v1/gaming/detect-game": {
@@ -3737,6 +3958,66 @@
           }
         },
         "summary": "Create Automatic Gaming Highlight Plan"
+      }
+    },
+    "/api/v1/projects/{project_id}/assets/{asset_id}/gaming/manual-highlight-plans": {
+      "post": {
+        "operationId": "create_manual_gaming_highlight_plan_api_v1_projects__project_id__assets__asset_id__gaming_manual_highlight_plans_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Asset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManualGamingHighlightPlanRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManualGamingHighlightPlanResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Manual Gaming Highlight Plan"
       }
     },
     "/api/v1/projects/{project_id}/assets/{asset_id}/media": {

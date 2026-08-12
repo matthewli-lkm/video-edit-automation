@@ -74,6 +74,22 @@ def _two_segment_plan(project_id, asset: MediaAsset) -> EditPlan:
     )
 
 
+def test_probe_explains_how_to_recover_when_ffprobe_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def missing_binary(*_args, **_kwargs):
+        raise FileNotFoundError(2, "No such file or directory", "ffprobe")
+
+    monkeypatch.setattr(subprocess, "run", missing_binary)
+
+    with pytest.raises(
+        MediaToolError,
+        match=r"FFprobe could not be found\. Install FFmpeg, then restart Cutroom\.",
+    ):
+        FFmpegGateway().probe(tmp_path / "recording.mp4")
+
+
 def test_command_uses_argument_list_and_typed_filter(tmp_path: Path) -> None:
     project_id = uuid4()
     suspicious_path = tmp_path / "clip; touch never.mov"
@@ -208,13 +224,41 @@ def test_render_rejects_nonempty_but_invalid_output(tmp_path: Path, monkeypatch)
     monkeypatch.setattr(subprocess, "run", fake_run)
     project_id = uuid4()
     asset = _asset(project_id, tmp_path / "source.mp4")
+    output = tmp_path / "broken.mp4"
     with pytest.raises(MediaToolError, match="created an invalid output"):
         FFmpegGateway().render(
             _plan(project_id, asset),
             {asset.id: asset},
-            tmp_path / "broken.mp4",
+            output,
             RenderPreset(),
         )
+    assert not output.exists()
+
+
+def test_render_reports_termination_and_removes_partial_output(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def fake_run(command, **_kwargs):
+        Path(command[-1]).write_bytes(b"partial mp4")
+        return subprocess.CompletedProcess(command, -15, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    project_id = uuid4()
+    asset = _asset(project_id, tmp_path / "source.mp4")
+    output = tmp_path / "interrupted.mp4"
+
+    with pytest.raises(
+        MediaToolError,
+        match="terminated by signal 15: no error output was produced",
+    ):
+        FFmpegGateway().render(
+            _plan(project_id, asset),
+            {asset.id: asset},
+            output,
+            RenderPreset(),
+        )
+    assert not output.exists()
 
 
 @pytest.mark.integration
@@ -382,7 +426,7 @@ def test_real_mkv_proxy_is_h264_aac_and_preserves_duration(tmp_path: Path) -> No
             "-c:v",
             "mpeg4",
             "-c:a",
-            "libvorbis",
+            "pcm_s16le",
             str(source),
         ],
         check=False,

@@ -257,6 +257,38 @@ running proxy/render records become visibly recoverable failures rather than rem
 Desktop process integration, a native file picker, Finder actions, dependency diagnostics, and
 installer packaging remain the separate G2g application-integration milestone.
 
+### G2g — desktop application integration (implemented)
+
+The sandboxed Electron shell owns both development and packaged process lifecycle. It reserves
+loopback ports, starts and health-checks the backend and production dashboard, connects them
+automatically, and shuts them down with the app. Packaged builds contain a single-file Python
+sidecar and the dashboard runtime, so they do not depend on a user-installed Python or Node.js. A
+narrow preload bridge provides a native video picker constrained to configured media roots and a
+Finder reveal action constrained to successful MP4 output inside the managed project workspace.
+
+The dashboard includes a typed dependency diagnostic for the database, writable workspace, free
+space, FFmpeg, ffprobe, and optional Tesseract. Batch 3 produces an ad-hoc-signed `.app` and `.dmg`
+for local testing. Bundling media binaries and their licences, application branding, Developer ID
+signing, notarization, updates, and clean-Mac release qualification are the Batch 4 release boundary.
+
+### Pre-Batch 4 — workflow separation (implemented)
+
+The console now exposes Manual and deterministic Kill & teamfight detection as first-cut workflows,
+with AI assistance stored as a separate Off/Review setting. Manual ranges create typed manual
+evidence and a validated plan, but exact human-trimmed ranges skip the redundant automatic-plan
+approval screen. Manual editing marks and includes plays, trims each selected play with direct
+manipulation or precise timestamps, then exports a combined reel, separate clips, or both. The deterministic workflow has no
+natural-language field: it accepts only
+Tesseract-detected champion kills, multikills, and kill clusters, then merges nearby action into
+teamfight clips. Full local-model editing remains deliberately deferred.
+
+Desktop onboarding now has only two mutually exclusive choices: create a new managed clips project
+or open an existing video folder in Finder. Both enter the editing room immediately. Empty projects
+prompt for their first recording inside the editor, and active projects can add further recordings
+there. New projects appear under `Desktop/Cutroom Projects/<project name>` and finished MP4s stay in
+that project's `Exports` folder. The dashboard also avoids restoring through a stale default backend port and translates
+loopback connection failures into a useful retry message.
+
 ## Milestone 6 — evaluation and learning loop
 
 **Outcome:** compare planner models/prompts using accepted/rejected segments, correction time, plan

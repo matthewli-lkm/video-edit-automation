@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
 from video_edit_automation.domain.gaming import HighlightSignalType
@@ -116,3 +117,21 @@ def test_nearby_kills_create_a_team_fight_signal() -> None:
     assert signals[0].event_name == "team_fight"
     assert signals[0].timestamp_seconds == 109
     assert signals[0].metadata["kill_count"] == 2
+
+
+def test_kill_detection_is_unavailable_without_tesseract() -> None:
+    analyzer = LeagueOcrSignalAnalyzer()
+    real_which = __import__("shutil").which
+
+    def fake_which(executable: str) -> str | None:
+        if executable == analyzer.tesseract_binary:
+            return None
+        if executable == analyzer.ffmpeg_binary:
+            return "/usr/local/bin/ffmpeg"
+        return real_which(executable)
+
+    with patch(
+        "video_edit_automation.infrastructure.league_ocr_analyzer.shutil.which",
+        side_effect=fake_which,
+    ):
+        assert analyzer.available() is False

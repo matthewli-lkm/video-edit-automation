@@ -36,12 +36,15 @@ This initial scaffold provides:
   requests, duplicate-job protection, and restart-safe status;
 - an integrated gaming review console with whole-source/current-cut/reel previews, evidence seeking,
   trim history, versioned approval, and final-output delivery actions;
+- separate Manual and Automation first-cut workflows, plus a saved optional AI-review setting;
 - clock-synchronized manual bookmarks that can directly create a MOBA highlight plan;
 - a Windows OBS companion plus Mac SMB/local inbox monitor with READY, checksum, idempotency, and
   reconnect-safe ingestion;
 - audio-track roles plus safe game-only rendering when game and microphone tracks are separate;
 - configurable dip-to-black video and audio transitions at every selected highlight cut;
 - dry-run FFmpeg command generation and background preview/final rendering;
+- a sandboxed macOS desktop application with a compiled local API, packaged dashboard, dependency
+  diagnostics, and ad-hoc-signed `.app`/`.dmg` output;
 - unit and media integration tests.
 
 Live OS capture, League telemetry, automatic FPS detectors, transcription, captions, and
@@ -69,8 +72,9 @@ The LLM never writes shell commands, arbitrary FFmpeg filters, or source-file pa
 
 ## Quick start
 
-Prerequisites: Python 3.12+, Node.js 22+, [`uv`](https://docs.astral.sh/uv/), FFmpeg/ffprobe, and
-Tesseract for automatic League analysis.
+Prerequisites: Python 3.12+, Node.js 22+, [`uv`](https://docs.astral.sh/uv/), and FFmpeg/ffprobe.
+Tesseract is required for the deterministic League kill/teamfight workflow. Manual selection,
+review, approval, and rendering continue without it.
 
 On a future Mac:
 
@@ -96,6 +100,28 @@ Open `http://127.0.0.1:4173`. The dashboard connects only to the localhost API. 
 optional; deterministic analysis, manual review, exact-version approval, and rendering work without
 a configured reviewer model.
 
+To run the Batch 3 desktop application in development:
+
+```bash
+npm --prefix desktop ci
+npm --prefix desktop start
+```
+
+The Electron shell starts and health-checks both local processes, connects the dashboard
+automatically, provides native video-folder and recording pickers, and reveals completed output in
+Finder.
+
+To create the ad-hoc-signed, non-notarized macOS app and DMG:
+
+```bash
+uv sync --extra dev --extra packaging
+npm --prefix desktop run dist
+```
+
+The packaged app contains its own dashboard and compiled Python API. Batch 3 still uses system
+FFmpeg/ffprobe and optional Tesseract; the in-app system check reports their availability. Bundled
+media tools, signing, notarization, updates, and clean-Mac release qualification remain Batch 4.
+
 Run the checks:
 
 ```bash
@@ -105,18 +131,21 @@ uv run pytest
 
 ## First useful workflow
 
-1. Create a project.
-2. Import a `.mov` or `.mp4` by local path.
-3. Create a manual plan, or supply transcript segments and ask a configured local LLM for one.
-4. Inspect the validation report and dry-run command.
-5. render a low-resolution preview.
-6. Accept or revise the plan, then request the final render.
+1. Create a new clips project or reopen an existing video folder.
+2. Enter the editor, then add one or more `.mov`, `.mp4`, `.mkv`, or other supported recordings.
+3. Choose Manual to scrub the recording, mark promising plays, include the ones you want, and trim
+   their exact ranges before export. Or choose Kill & teamfight detection to find visible League
+   kill announcements with local Tesseract and merge nearby kills. AI review is a separate setting.
+4. In Manual mode, choose one combined video, separate clip files, or both. In Automation, inspect
+   the evidence, preview, and approve the detected plan.
+5. Render locally. Nothing is uploaded or published.
 
-For gameplay, import a full-session recording and assign separate game/microphone track roles. You
-can submit normalized signals directly for any profile, or call the League auto-highlight endpoint
-to shortlist frames from audio, read visible HUD announcements locally, persist the evidence, and
-create a validated MOBA plan in one operation. See the gaming architecture for the request shape and
-known OCR limits.
+For gameplay, import a full-session recording and assign separate game/microphone track roles.
+Manual first cuts create durable manual-marker evidence but skip the redundant second approval
+because every exact range was already reviewed while trimming. Deterministic automation reads visible
+League kill and multikill announcements with Tesseract and merges nearby kills into teamfight
+clips; it does not interpret free-form instructions or call an LLM. See the gaming architecture for
+the request shape and known OCR limits.
 
 On Windows, the companion can now discover stable OBS recordings, package them into a shared Ready
 folder, and let the Mac inbox automatically verify, copy, probe, and register the League session.
@@ -131,7 +160,7 @@ sample representative preview frames, request an independent typed verdict, crea
 plan from supported corrections, and repeat once. Metrics remain provisional until every proposed
 candidate has an accept, reject, or adjust decision. YouTube publishing and deletion remain absent.
 
-Human approval is a separate authority boundary. A browser revision submits a complete typed plan,
+For automatic plans, human approval is a separate authority boundary. A browser revision submits a complete typed plan,
 creates a validated version, and clears any earlier approval. Final rendering is rejected unless the
 exact current plan ID and version have active human approval; Agent 2 approval alone is insufficient.
 
@@ -142,6 +171,11 @@ application restart marks interrupted work failed with an explicit retry path.
 
 Manual imports reference source media in place. Capture-inbox imports are copied and checksum
 verified into the Mac's project workspace before editing. Source files are never overwritten.
+Creating a desktop project creates `Desktop/Cutroom Projects/<project name>` and enters the editor
+immediately, even before a recording exists. Finished MP4 files are written to its visible
+`Exports` folder. The editor then
+shows a dedicated recording action and supports adding more recordings later. On desktop, reopening
+a video folder uses Finder and remembers the Cutroom project linked to that folder on the same Mac.
 
 ## Local AI on the Mac
 
@@ -169,6 +203,7 @@ The media pipeline and LLM can also live on separate machines later: keep this M
 - `src/video_edit_automation/infrastructure/` — FFmpeg, SQLite, paths, and local LLM adapters
 - `src/video_edit_automation/api/` — HTTP boundary only
 - `frontend/` — local gaming review console and generated API types
+- `desktop/` — sandboxed Electron lifecycle and native bridge
 - `scripts/dev-dashboard.sh` — one-command local frontend/backend startup
 
 ## Non-goals for the first release

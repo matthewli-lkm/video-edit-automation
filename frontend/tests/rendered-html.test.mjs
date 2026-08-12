@@ -33,6 +33,16 @@ test("renders development preview metadata", async () => {
   assert.match(html, developmentPreviewMeta);
   assert.match(html, /Cutroom/);
   assert.match(html, /Gaming workflow/);
+  assert.match(html, /Choose how the first cut is made/);
+  assert.match(html, />Manual</);
+  assert.match(html, /Kill &amp; teamfight detection/);
+  assert.match(html, /AI assistance/);
+  assert.match(html, /No model will be called/);
+  assert.match(html, /Kill &amp; teamfight detection/);
+  assert.match(html, /Champion kills/);
+  assert.match(html, /Multi-kills/);
+  assert.match(html, /Nearby kills are combined/);
+  assert.doesNotMatch(html, /Tell the editor what matters/);
   assert.match(html, /Publishing and source deletion are disabled/);
   assert.match(html, /Max duration/);
   assert.match(html, /shorter valid reels still continue/);

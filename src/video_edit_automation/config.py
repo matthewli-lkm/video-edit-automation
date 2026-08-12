@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = Field(default=8765, ge=1, le=65535)
     data_dir: Path = Field(default_factory=_default_data_dir)
+    projects_dir: Path | None = None
     allowed_media_roots: list[Path] = Field(default_factory=_default_media_roots)
     capture_inbox_roots: list[Path] = Field(default_factory=list)
     capture_inbox_poll_seconds: float = Field(default=15, ge=1, le=3_600)

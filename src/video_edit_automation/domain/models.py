@@ -84,6 +84,7 @@ class PlaybackStatus(StrEnum):
 class Project(StrictModel):
     id: UUID = Field(default_factory=uuid4)
     name: NonBlankText
+    workspace_path: Path | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
 

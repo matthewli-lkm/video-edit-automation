@@ -38,6 +38,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/desktop/diagnostics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Desktop Diagnostics */
+        get: operations["desktop_diagnostics_api_v1_desktop_diagnostics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/gaming/detect-game": {
         parameters: {
             query?: never;
@@ -237,6 +254,23 @@ export interface paths {
         put?: never;
         /** Create Automatic Gaming Highlight Plan */
         post: operations["create_automatic_gaming_highlight_plan_api_v1_projects__project_id__assets__asset_id__gaming_auto_highlight_plans_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/assets/{asset_id}/gaming/manual-highlight-plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Manual Gaming Highlight Plan */
+        post: operations["create_manual_gaming_highlight_plan_api_v1_projects__project_id__assets__asset_id__gaming_manual_highlight_plans_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -943,6 +977,51 @@ export interface components {
              * @default 20
              */
             max_highlights: number;
+        };
+        /** DependencyDiagnostic */
+        DependencyDiagnostic: {
+            /** Name */
+            name: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ready" | "unavailable" | "error";
+            /** Version */
+            version?: string | null;
+        };
+        /** DesktopDiagnosticsResponse */
+        DesktopDiagnosticsResponse: {
+            /**
+             * Database
+             * @enum {string}
+             */
+            database: "ready" | "unavailable";
+            ffmpeg: components["schemas"]["DependencyDiagnostic"];
+            ffprobe: components["schemas"]["DependencyDiagnostic"];
+            /**
+             * Highlight Reviewer
+             * @enum {string}
+             */
+            highlight_reviewer: "ready" | "disabled" | "unavailable";
+            /**
+             * Local Planner
+             * @enum {string}
+             */
+            local_planner: "configured" | "disabled";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ready" | "degraded";
+            tesseract: components["schemas"]["DependencyDiagnostic"];
+            /**
+             * Workspace
+             * @enum {string}
+             */
+            workspace: "ready" | "unavailable";
+            /** Workspace Free Bytes */
+            workspace_free_bytes: number;
         };
         /** DetectedGame */
         DetectedGame: {
@@ -1685,6 +1764,30 @@ export interface components {
             /** Timestamp Seconds */
             timestamp_seconds?: number | null;
         };
+        /** ManualGamingHighlightPlanRequest */
+        ManualGamingHighlightPlanRequest: {
+            brief: components["schemas"]["EditBrief"];
+            /** Clips */
+            clips: components["schemas"]["ManualHighlightClip"][];
+        };
+        /** ManualGamingHighlightPlanResponse */
+        ManualGamingHighlightPlanResponse: {
+            analysis: components["schemas"]["HighlightAnalysis"];
+            plan: components["schemas"]["EditPlan"];
+            review_session: components["schemas"]["HighlightReviewSession"];
+            /** Selected Candidates */
+            selected_candidates: components["schemas"]["HighlightCandidate"][];
+            validation: components["schemas"]["PlanValidationReport"];
+        };
+        /** ManualHighlightClip */
+        ManualHighlightClip: {
+            /** End Seconds */
+            end_seconds: number;
+            /** Start Seconds */
+            start_seconds: number;
+            /** Title */
+            title: string;
+        };
         /** MediaAsset */
         MediaAsset: {
             /** Audio Codec */
@@ -1784,6 +1887,8 @@ export interface components {
             id?: string;
             /** Name */
             name: string;
+            /** Workspace Path */
+            workspace_path?: string | null;
         };
         /** ProjectCreateRequest */
         ProjectCreateRequest: {
@@ -1936,6 +2041,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CaptureInboxStatus"];
+                };
+            };
+        };
+    };
+    desktop_diagnostics_api_v1_desktop_diagnostics_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DesktopDiagnosticsResponse"];
                 };
             };
         };
@@ -2311,6 +2436,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AutomaticGamingHighlightPlanResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_manual_gaming_highlight_plan_api_v1_projects__project_id__assets__asset_id__gaming_manual_highlight_plans_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ManualGamingHighlightPlanRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ManualGamingHighlightPlanResponse"];
                 };
             };
             /** @description Validation Error */

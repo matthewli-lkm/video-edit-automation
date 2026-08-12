@@ -13,8 +13,18 @@ import {
   clampBoundary,
   createBoundaryWindow,
   formatTimestamp,
+  moveClipRange,
   parseTimestamp,
+  positionRangeInWindow,
 } from "./time";
+import {
+  createPlayAroundPlayhead,
+  selectedManualClips,
+  totalManualDuration,
+  validateManualClips,
+  type ManualClip,
+} from "./manual-editor";
+import { runSequentialTasks, waitForTerminalJob } from "./export-workflow";
 import { deriveWorkflowSteps } from "./workflow";
 import {
   playbackStatusCopy,
@@ -25,10 +35,22 @@ import {
 import type { components } from "./generated/api-schema";
 
 type Mode = "demo" | "live";
+type EditWorkflow = "manual" | "automation";
+type ManualStage = "select" | "edit" | "export";
+type ManualExportMode = "combined" | "separate" | "both";
+type AiAssistance = "off" | "review" | "full";
 type Decision = "pending" | "accept" | "reject" | "adjust";
 type PreviewMode = "source" | "cut" | "reel";
 type TrimPoint = { start: number; end: number };
 type TrimHistory = { entries: TrimPoint[]; cursor: number };
+type ManualRangeDrag = {
+  kind: "move" | "start" | "end";
+  pointerStart: number;
+  rangeStart: number;
+  rangeEnd: number;
+  viewStart: number;
+  viewEnd: number;
+};
 type ApiSchemas = components["schemas"];
 type WithId<T extends { id?: string }> = Omit<T, "id"> & { id: string };
 
@@ -140,6 +162,698 @@ type Workflow = {
 type RenderJob = WithId<ApiSchemas["Job"]>;
 type AssetPlayback = ApiSchemas["AssetPlayback"];
 type HealthStatus = ApiSchemas["HealthResponse"];
+type DesktopDiagnostics = ApiSchemas["DesktopDiagnosticsResponse"];
+
+type CutroomDesktopBridge = {
+  bootstrap: () => Promise<{ apiUrl: string }>;
+  selectMedia: (defaultPath?: string) => Promise<{ path: string } | null>;
+  selectFolder: () => Promise<{ path: string; name: string } | null>;
+  revealOutput: (outputPath: string) => Promise<boolean>;
+};
+
+declare global {
+  interface Window {
+    cutroomDesktop?: CutroomDesktopBridge;
+  }
+}
+
+function ManualRangeEditor({
+  sourceDuration,
+  start,
+  end,
+  playheadSeconds,
+  onChange,
+  onPreviewSeek,
+}: {
+  sourceDuration: number;
+  start: number;
+  end: number;
+  playheadSeconds: number;
+  onChange: (range: TrimPoint) => void;
+  onPreviewSeek: (seconds: number) => void;
+}) {
+  const trackRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<ManualRangeDrag | null>(null);
+  const safeDuration = Math.max(sourceDuration, 0.1);
+  const [view] = useState<TrimPoint>(() =>
+    createBoundaryWindow(start, end, safeDuration, 30),
+  );
+  const visibleDuration = Math.max(0.1, view.end - view.start);
+  const rangePosition = positionRangeInWindow(
+    start,
+    end,
+    view.start,
+    view.end,
+  );
+  const startPercent = rangePosition.left;
+  const endPercent = rangePosition.left + rangePosition.width;
+  const playheadPercent =
+    ((playheadSeconds - view.start) / visibleDuration) * 100;
+
+  function pointerSeconds(
+    clientX: number,
+    activeView: TrimPoint = view,
+  ) {
+    const bounds = trackRef.current?.getBoundingClientRect();
+    if (!bounds || bounds.width <= 0) return start;
+    return Math.min(
+      activeView.end,
+      Math.max(
+        activeView.start,
+        activeView.start +
+          ((clientX - bounds.left) / bounds.width) *
+            (activeView.end - activeView.start),
+      ),
+    );
+  }
+
+  function beginDrag(
+    kind: ManualRangeDrag["kind"],
+    event: React.PointerEvent<HTMLButtonElement>,
+  ) {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const activeView = { ...view };
+    dragRef.current = {
+      kind,
+      pointerStart: pointerSeconds(event.clientX, activeView),
+      rangeStart: start,
+      rangeEnd: end,
+      viewStart: activeView.start,
+      viewEnd: activeView.end,
+    };
+  }
+
+  function continueDrag(event: React.PointerEvent<HTMLButtonElement>) {
+    const drag = dragRef.current;
+    if (!drag) return;
+    const pointer = pointerSeconds(event.clientX, {
+      start: drag.viewStart,
+      end: drag.viewEnd,
+    });
+    if (drag.kind === "move") {
+      const range = moveClipRange(
+        drag.rangeStart,
+        drag.rangeEnd,
+        pointer - drag.pointerStart,
+        safeDuration,
+      );
+      onChange(range);
+      onPreviewSeek(range.start);
+      return;
+    }
+    if (drag.kind === "start") {
+      const range = {
+        start: clampBoundary(
+          "start",
+          pointer,
+          drag.rangeStart,
+          drag.rangeEnd,
+          safeDuration,
+        ),
+        end: drag.rangeEnd,
+      };
+      onChange(range);
+      onPreviewSeek(range.start);
+      return;
+    }
+    const range = {
+      start: drag.rangeStart,
+      end: clampBoundary(
+        "end",
+        pointer,
+        drag.rangeStart,
+        drag.rangeEnd,
+        safeDuration,
+      ),
+    };
+    onChange(range);
+    onPreviewSeek(Math.max(range.start, range.end - 1));
+  }
+
+  function finishDrag(event: React.PointerEvent<HTMLButtonElement>) {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    dragRef.current = null;
+  }
+
+  function handleKey(
+    kind: ManualRangeDrag["kind"],
+    event: React.KeyboardEvent<HTMLButtonElement>,
+  ) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const delta = (event.key === "ArrowLeft" ? -1 : 1) * (event.shiftKey ? 1 : 0.1);
+    if (kind === "move") {
+      const range = moveClipRange(start, end, delta, safeDuration);
+      onChange(range);
+      onPreviewSeek(range.start);
+    } else if (kind === "start") {
+      const range = {
+        start: clampBoundary("start", start + delta, start, end, safeDuration),
+        end,
+      };
+      onChange(range);
+      onPreviewSeek(range.start);
+    } else {
+      const range = {
+        start,
+        end: clampBoundary("end", end + delta, start, end, safeDuration),
+      };
+      onChange(range);
+      onPreviewSeek(Math.max(range.start, range.end - 1));
+    }
+  }
+
+  return (
+    <div className="manual-range-editor">
+      <div className="manual-range-heading">
+        <span>
+          <strong>Clip range</strong>
+          <small>Drag the clip to move it · drag either edge to resize</small>
+        </span>
+        <output>{formatTimestamp(end - start)}</output>
+      </div>
+      <div
+        className="manual-range-track"
+        ref={trackRef}
+        aria-label="Manual clip timeline"
+      >
+        <div className="manual-range-grid" aria-hidden="true" />
+        {playheadPercent >= 0 && playheadPercent <= 100 && (
+          <span
+            className="manual-range-playhead"
+            style={{ left: `${playheadPercent}%` }}
+            aria-hidden="true"
+          />
+        )}
+        <button
+          type="button"
+          className="manual-range-selection"
+          style={{
+            left: `${startPercent}%`,
+            width: `${Math.max(0.1, endPercent - startPercent)}%`,
+          }}
+          onPointerDown={(event) => beginDrag("move", event)}
+          onPointerMove={continueDrag}
+          onPointerUp={finishDrag}
+          onPointerCancel={finishDrag}
+          onKeyDown={(event) => handleKey("move", event)}
+          aria-label={`Move clip, ${formatTimestamp(start)} to ${formatTimestamp(end)}`}
+        >
+          <span>{formatTimestamp(end - start)}</span>
+        </button>
+        <button
+          type="button"
+          className="manual-range-handle manual-range-handle-start"
+          style={{ left: `${startPercent}%` }}
+          onPointerDown={(event) => beginDrag("start", event)}
+          onPointerMove={continueDrag}
+          onPointerUp={finishDrag}
+          onPointerCancel={finishDrag}
+          onKeyDown={(event) => handleKey("start", event)}
+          aria-label={`Resize clip start, currently ${formatTimestamp(start)}`}
+        />
+        <button
+          type="button"
+          className="manual-range-handle manual-range-handle-end"
+          style={{ left: `${endPercent}%` }}
+          onPointerDown={(event) => beginDrag("end", event)}
+          onPointerMove={continueDrag}
+          onPointerUp={finishDrag}
+          onPointerCancel={finishDrag}
+          onKeyDown={(event) => handleKey("end", event)}
+          aria-label={`Resize clip end, currently ${formatTimestamp(end)}`}
+        />
+      </div>
+      <div className="manual-range-summary" aria-live="polite">
+        <span>
+          <small>Starts</small>
+          <strong>{formatTimestamp(start)}</strong>
+        </span>
+        <span>
+          <small>Clip length</small>
+          <strong>{formatTimestamp(end - start)}</strong>
+        </span>
+        <span>
+          <small>Ends</small>
+          <strong>{formatTimestamp(end)}</strong>
+        </span>
+      </div>
+      <div className="manual-range-times">
+        <span>
+          In <strong>{formatTimestamp(start)}</strong>
+        </span>
+        <span>
+          Window {formatTimestamp(view.start)}–{formatTimestamp(view.end)}
+        </span>
+        <span>
+          Out <strong>{formatTimestamp(end)}</strong>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function ManualWorkbench({
+  stage,
+  clips,
+  activeClipId,
+  playheadSeconds,
+  sourceDuration,
+  busy,
+  onStageChange,
+  onMarkPlay,
+  onToggleClip,
+  onSelectClip,
+  onUpdateClip,
+  onRemoveClip,
+  onSplitClip,
+  onSeek,
+  onPrepareExport,
+}: {
+  stage: Exclude<ManualStage, "export">;
+  clips: ManualClip[];
+  activeClipId: string;
+  playheadSeconds: number;
+  sourceDuration: number;
+  busy: boolean;
+  onStageChange: (stage: "select" | "edit") => void;
+  onMarkPlay: () => void;
+  onToggleClip: (id: string) => void;
+  onSelectClip: (id: string) => void;
+  onUpdateClip: (id: string, patch: Partial<ManualClip>) => void;
+  onRemoveClip: (id: string) => void;
+  onSplitClip: (id: string) => void;
+  onSeek: (seconds: number) => void;
+  onPrepareExport: () => void;
+}) {
+  const selectedClips = selectedManualClips(clips);
+  const activeClip =
+    selectedClips.find((clip) => clip.id === activeClipId) ?? selectedClips[0];
+  const totalDuration = totalManualDuration(clips);
+  const safeDuration = Math.max(0.1, sourceDuration);
+
+  function commitTime(field: "start" | "end", value: string) {
+    if (!activeClip) return;
+    const parsed = parseTimestamp(value);
+    if (parsed === null) return;
+    const nextValue = clampBoundary(
+      field,
+      parsed,
+      activeClip.start,
+      activeClip.end,
+      safeDuration,
+    );
+    onUpdateClip(activeClip.id, { [field]: nextValue });
+    onSeek(nextValue);
+  }
+
+  return (
+    <section
+      className={`manual-workbench ${stage === "edit" ? "compact-edit" : ""}`}
+      aria-labelledby="manual-workbench-title"
+    >
+      <header className="manual-workbench-header">
+        <div>
+          <span className="eyebrow">Manual editor</span>
+          <h2 id="manual-workbench-title">
+            {stage === "select" ? "Choose the plays worth keeping" : "Shape your selected clips"}
+          </h2>
+          <p>
+            {stage === "select"
+              ? "Scrub the recording, mark the moments you remember, and choose which ones enter the edit."
+              : "Trim directly on the active clip. Cutroom keeps every change non-destructive."}
+          </p>
+        </div>
+        <div className="manual-stage-nav" aria-label="Manual editing steps">
+          <button
+            className={stage === "select" ? "current" : "complete"}
+            onClick={() => onStageChange("select")}
+          >
+            <span>1</span> Select plays
+          </button>
+          <button
+            className={stage === "edit" ? "current" : ""}
+            onClick={() => selectedClips.length && onStageChange("edit")}
+            disabled={!selectedClips.length}
+          >
+            <span>2</span> Trim clips
+          </button>
+          <button disabled>
+            <span>3</span> Export
+          </button>
+        </div>
+      </header>
+
+      {stage === "select" ? (
+        <div className="manual-select-stage">
+          <div className="manual-mark-callout">
+            <span className="manual-scissors" aria-hidden="true">✂</span>
+            <div>
+              <strong>Found a play?</strong>
+              <small>
+                Pause near the action and mark it. Cutroom starts with 12 seconds of setup and a 30-second window.
+              </small>
+            </div>
+            <output>{formatTimestamp(playheadSeconds)}</output>
+            <button className="primary-button" onClick={onMarkPlay} disabled={busy}>
+              Mark play here
+            </button>
+          </div>
+
+          <div className="manual-source-map">
+            <div className="manual-source-map-heading">
+              <span>
+                <strong>Recording map</strong>
+                <small>Click a marked play to preview it · click the check to include or skip it</small>
+              </span>
+              <output>{formatTimestamp(sourceDuration)}</output>
+            </div>
+            <div className="manual-source-map-track" aria-label="Marked plays across the recording">
+              <span
+                className="manual-map-playhead"
+                style={{ left: `${(playheadSeconds / safeDuration) * 100}%` }}
+              />
+              {clips.map((clip, index) => (
+                <button
+                  key={clip.id}
+                  className={clip.selected ? "selected" : ""}
+                  style={{
+                    left: `${(clip.start / safeDuration) * 100}%`,
+                    width: `${Math.max(1.2, ((clip.end - clip.start) / safeDuration) * 100)}%`,
+                  }}
+                  onClick={() => {
+                    onSelectClip(clip.id);
+                    onSeek(clip.start);
+                  }}
+                  aria-label={`${clip.title}, ${formatTimestamp(clip.start)} to ${formatTimestamp(clip.end)}`}
+                >
+                  {index + 1}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="manual-play-list" aria-live="polite">
+            {clips.length ? (
+              clips.map((clip, index) => (
+                <article
+                  key={clip.id}
+                  className={`${clip.selected ? "selected" : ""} ${clip.id === activeClipId ? "active" : ""}`}
+                >
+                  <button
+                    className="manual-play-preview"
+                    onClick={() => {
+                      onSelectClip(clip.id);
+                      onSeek(clip.start);
+                    }}
+                  >
+                    <span>{String(index + 1).padStart(2, "0")}</span>
+                    <span aria-hidden="true">▶</span>
+                  </button>
+                  <button
+                    className="manual-play-copy"
+                    onClick={() => {
+                      onSelectClip(clip.id);
+                      onSeek(clip.start);
+                    }}
+                  >
+                    <strong>{clip.title}</strong>
+                    <small>
+                      {formatTimestamp(clip.start)}–{formatTimestamp(clip.end)} · {formatTimestamp(clip.end - clip.start)}
+                    </small>
+                  </button>
+                  <button
+                    className={`manual-play-check ${clip.selected ? "selected" : ""}`}
+                    onClick={() => onToggleClip(clip.id)}
+                    aria-pressed={clip.selected}
+                  >
+                    {clip.selected ? "✓ Included" : "+ Include"}
+                  </button>
+                  <button
+                    className="manual-play-remove"
+                    onClick={() => onRemoveClip(clip.id)}
+                    aria-label={`Remove ${clip.title}`}
+                  >
+                    ×
+                  </button>
+                </article>
+              ))
+            ) : (
+              <div className="manual-play-empty">
+                <span aria-hidden="true">⌁</span>
+                <strong>No plays marked yet</strong>
+                <small>Use the source player above, pause near a highlight, then choose “Mark play here.”</small>
+              </div>
+            )}
+          </div>
+
+          <footer className="manual-workbench-footer">
+            <span>
+              <strong>{selectedClips.length}</strong> selected · {formatTimestamp(totalDuration)} total
+            </span>
+            <button
+              className="primary-button manual-edit-cta"
+              disabled={!selectedClips.length || busy}
+              onClick={() => onStageChange("edit")}
+            >
+              <span aria-hidden="true">✂</span> Edit {selectedClips.length || "selected"} {selectedClips.length === 1 ? "play" : "plays"}
+            </button>
+          </footer>
+        </div>
+      ) : (
+        <div className="manual-edit-stage">
+          <div className="manual-clip-strip" aria-label="Selected clips">
+            <span className="manual-clip-strip-label">
+              <small>Play clips</small>
+              <strong>Choose a clip to trim</strong>
+            </span>
+            {selectedClips.map((clip, index) => (
+              <button
+                key={clip.id}
+                className={clip.id === activeClip?.id ? "active" : ""}
+                onClick={() => {
+                  onSelectClip(clip.id);
+                  onSeek(clip.start);
+                }}
+              >
+                <span>{index + 1}</span>
+                <span>
+                  <strong>{clip.title}</strong>
+                  <small>{formatTimestamp(clip.end - clip.start)}</small>
+                </span>
+              </button>
+            ))}
+          </div>
+
+          {activeClip && (
+            <div className="manual-clip-editor">
+              <div className="manual-clip-editor-topline">
+                <label>
+                  Clip name
+                  <input
+                    value={activeClip.title}
+                    onChange={(event) => onUpdateClip(activeClip.id, { title: event.target.value })}
+                  />
+                </label>
+                <div className="manual-clip-tools">
+                  <button
+                    className="secondary-button"
+                    onClick={() => onSplitClip(activeClip.id)}
+                    disabled={playheadSeconds <= activeClip.start + 0.1 || playheadSeconds >= activeClip.end - 0.1}
+                    title="Place the playhead inside this clip"
+                  >
+                    ✂ Split at playhead
+                  </button>
+                  <button className="text-button danger" onClick={() => onRemoveClip(activeClip.id)}>
+                    Remove clip
+                  </button>
+                </div>
+              </div>
+
+              <ManualRangeEditor
+                key={activeClip.id}
+                sourceDuration={sourceDuration}
+                start={activeClip.start}
+                end={activeClip.end}
+                playheadSeconds={playheadSeconds}
+                onChange={(range) => onUpdateClip(activeClip.id, range)}
+                onPreviewSeek={onSeek}
+              />
+
+              <div className="manual-precision-row">
+                <label key={`${activeClip.id}-start-${activeClip.start}`}>
+                  In <small>MM:SS.s</small>
+                  <input
+                    defaultValue={formatTimestamp(activeClip.start)}
+                    onBlur={(event) => commitTime("start", event.target.value)}
+                    onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()}
+                  />
+                </label>
+                <button
+                  className="text-button"
+                  onClick={() => commitTime("start", formatTimestamp(playheadSeconds))}
+                >
+                  Set In to playhead
+                </button>
+                <div className="manual-duration-readout">
+                  <span>Duration</span>
+                  <strong>{formatTimestamp(activeClip.end - activeClip.start)}</strong>
+                </div>
+                <label key={`${activeClip.id}-end-${activeClip.end}`}>
+                  Out <small>MM:SS.s</small>
+                  <input
+                    defaultValue={formatTimestamp(activeClip.end)}
+                    onBlur={(event) => commitTime("end", event.target.value)}
+                    onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()}
+                  />
+                </label>
+                <button
+                  className="text-button"
+                  onClick={() => commitTime("end", formatTimestamp(playheadSeconds))}
+                >
+                  Set Out to playhead
+                </button>
+              </div>
+              <p className="manual-keyboard-hint">
+                Tip: drag either gold handle for a rough cut, then use the time fields for precision. The source is never changed.
+              </p>
+            </div>
+          )}
+
+          <footer className="manual-workbench-footer">
+            <button className="secondary-button" onClick={() => onStageChange("select")}>
+              ← Back to plays
+            </button>
+            <span>
+              <strong>{selectedClips.length}</strong> clips · {formatTimestamp(totalDuration)} final length
+            </span>
+            <button className="primary-button" onClick={onPrepareExport} disabled={busy}>
+              {busy ? "Preparing export…" : "Done editing · Export →"}
+            </button>
+          </footer>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ManualExportPanel({
+  clips,
+  exportMode,
+  jobs,
+  projectPath,
+  busy,
+  onModeChange,
+  onExport,
+  onBack,
+  onReveal,
+}: {
+  clips: ManualClip[];
+  exportMode: ManualExportMode;
+  jobs: RenderJob[];
+  projectPath?: string;
+  busy: boolean;
+  onModeChange: (mode: ManualExportMode) => void;
+  onExport: () => void;
+  onBack: () => void;
+  onReveal: (job: RenderJob) => void;
+}) {
+  const completed = jobs.filter((job) => job.status === "succeeded");
+  const failed = jobs.filter((job) => job.status === "failed");
+  const rendering = jobs.some((job) => ["queued", "running"].includes(job.status));
+  const expectedFiles =
+    exportMode === "combined"
+      ? 1
+      : exportMode === "separate"
+        ? clips.length
+        : clips.length + 1;
+
+  return (
+    <section className="manual-export-panel" aria-labelledby="manual-export-title">
+      <header>
+        <div>
+          <span className="eyebrow">Manual edit complete</span>
+          <h2 id="manual-export-title">Choose how to save your clips</h2>
+          <p>
+            You already reviewed every cut while trimming, so there is no extra approval step.
+          </p>
+        </div>
+        <span className="manual-export-location">
+          <small>Saved locally in</small>
+          <strong>{projectPath ? `${projectPath}/Exports` : "the project’s Exports folder"}</strong>
+        </span>
+      </header>
+
+      <div className="manual-export-options" role="radiogroup" aria-label="Export format">
+        {([
+          ["combined", "Combined video", "Join every clip into one highlight video."],
+          ["separate", "Separate clips", "Save one MP4 for each trimmed clip."],
+          ["both", "Both", "Save the combined video and every individual clip."],
+        ] as const).map(([value, title, description]) => (
+          <button
+            key={value}
+            type="button"
+            role="radio"
+            aria-checked={exportMode === value}
+            className={exportMode === value ? "selected" : ""}
+            onClick={() => onModeChange(value)}
+            disabled={rendering}
+          >
+            <span className="manual-export-radio" aria-hidden="true" />
+            <strong>{title}</strong>
+            <small>{description}</small>
+          </button>
+        ))}
+      </div>
+
+      <div className="manual-export-summary">
+        <span><strong>{clips.length}</strong> trimmed clips</span>
+        <span><strong>{expectedFiles}</strong> {expectedFiles === 1 ? "file" : "files"} to create</span>
+        <span><strong>MP4</strong> local export</span>
+      </div>
+
+      {jobs.length > 0 && (
+        <div className="manual-export-results" aria-live="polite">
+          {jobs.map((job, index) => (
+            <div key={job.id}>
+              <span className={`export-status ${job.status}`} aria-hidden="true" />
+              <span>
+                <strong>{jobs.length === 1 ? "Highlight video" : `Export ${index + 1}`}</strong>
+                <small>{statusLabel(job.status)}{job.error ? ` · ${job.error}` : ""}</small>
+              </span>
+              {job.status === "succeeded" && job.output_path && (
+                <button className="secondary-button" onClick={() => onReveal(job)}>
+                  Show in Finder
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <footer>
+        <button className="secondary-button" onClick={onBack} disabled={rendering}>
+          ← Back to trimming
+        </button>
+        <span>
+          {failed.length
+            ? `${failed.length} export failed`
+            : completed.length === jobs.length && jobs.length
+              ? `${completed.length} ${completed.length === 1 ? "file" : "files"} ready`
+              : rendering
+                ? "Rendering locally…"
+                : "Nothing will be uploaded"}
+        </span>
+        <button className="primary-button" onClick={onExport} disabled={busy || rendering}>
+          {rendering ? "Rendering…" : jobs.length ? "Export again" : "Export now"}
+        </button>
+      </footer>
+    </section>
+  );
+}
 
 const DEMO_CANDIDATES: Candidate[] = [
   {
@@ -149,19 +863,19 @@ const DEMO_CANDIDATES: Candidate[] = [
     start: 628.4,
     end: 655.2,
     score: 0.94,
-    signalIds: ["ocr-kill-14", "audio-peak-31"],
+    signalIds: ["ocr-kill-14", "ocr-kill-15"],
     labels: ["champion kill", "team fight"],
     decision: "accept",
   },
   {
     id: "demo-2",
     index: 1,
-    title: "Baron contest",
+    title: "Baron pit teamfight",
     start: 1014.8,
     end: 1056.6,
     score: 0.88,
-    signalIds: ["ocr-baron-04", "audio-peak-48"],
-    labels: ["objective", "reaction"],
+    signalIds: ["ocr-kill-22", "ocr-multikill-04"],
+    labels: ["multi kill", "team fight"],
     decision: "adjust",
   },
   {
@@ -178,18 +892,15 @@ const DEMO_CANDIDATES: Candidate[] = [
   {
     id: "demo-4",
     index: 3,
-    title: "Victory screen",
+    title: "Nexus cleanup",
     start: 1818.7,
     end: 1832.5,
     score: 0.71,
-    signalIds: ["ocr-victory-01"],
-    labels: ["result"],
+    signalIds: ["ocr-kill-34"],
+    labels: ["champion kill"],
     decision: "pending",
   },
 ];
-
-const DEMO_PROMPT =
-  "Create a tight League highlight focused on team fights, objective steals, and my strongest reactions. Keep the setup before each play, remove farming, and end on the result screen.";
 
 const storageKey = "vea-gaming-console-v1";
 
@@ -197,6 +908,11 @@ function formatTime(seconds: number) {
   const safe = Math.max(0, Math.round(seconds));
   const minutes = Math.floor(safe / 60);
   return `${minutes}:${String(safe % 60).padStart(2, "0")}`;
+}
+
+function formatStorage(bytes: number) {
+  if (bytes < 1024 ** 3) return `${Math.round(bytes / 1024 ** 2)} MB free`;
+  return `${(bytes / 1024 ** 3).toFixed(1)} GB free`;
 }
 
 function statusLabel(value: string) {
@@ -215,13 +931,20 @@ async function requestJson<T>(
   path: string,
   init?: RequestInit,
 ): Promise<T> {
-  const response = await fetch(`${baseUrl.replace(/\/$/, "")}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...init?.headers,
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl.replace(/\/$/, "")}${path}`, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        ...init?.headers,
+      },
+    });
+  } catch {
+    throw new Error(
+      "Cutroom lost its local connection. Wait a moment, then try again.",
+    );
+  }
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as {
       detail?: string;
@@ -233,6 +956,10 @@ async function requestJson<T>(
 
 export default function Home() {
   const [mode, setMode] = useState<Mode>("demo");
+  const [editWorkflow, setEditWorkflow] =
+    useState<EditWorkflow>("automation");
+  const [aiAssistance, setAiAssistance] =
+    useState<AiAssistance>("off");
   const [apiUrl, setApiUrl] = useState("http://127.0.0.1:8765");
   const [connection, setConnection] = useState<
     "idle" | "checking" | "connected" | "failed"
@@ -240,10 +967,13 @@ export default function Home() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
   const [projectName, setProjectName] = useState("League highlights");
+  const [projectFolders, setProjectFolders] = useState<Record<string, string>>(
+    {},
+  );
   const [assets, setAssets] = useState<Asset[]>([]);
   const [assetId, setAssetId] = useState("");
   const [sourcePath, setSourcePath] = useState("");
-  const [prompt, setPrompt] = useState(DEMO_PROMPT);
+  const [showSetup, setShowSetup] = useState(true);
   const [targetDuration, setTargetDuration] = useState(180);
   const [maxHighlights, setMaxHighlights] = useState(8);
   const [demoCandidates, setDemoCandidates] =
@@ -256,6 +986,7 @@ export default function Home() {
   const [humanReview, setHumanReview] = useState<HumanReview | null>(null);
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
   const [health, setHealth] = useState<HealthStatus | null>(null);
+  const [diagnostics, setDiagnostics] = useState<DesktopDiagnostics | null>(null);
   const [previewJobId, setPreviewJobId] = useState("");
   const [previewJob, setPreviewJob] = useState<RenderJob | null>(null);
   const [finalJob, setFinalJob] = useState<RenderJob | null>(null);
@@ -265,6 +996,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const [leftOpen, setLeftOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
+  const [desktopMode, setDesktopMode] = useState(false);
   const [previewMode, setPreviewMode] = useState<PreviewMode>("cut");
   const [boundaryDraft, setBoundaryDraft] = useState({
     start: formatTimestamp(DEMO_CANDIDATES[1].start),
@@ -283,6 +1015,12 @@ export default function Home() {
     start: "",
     end: "",
   });
+  const [manualClips, setManualClips] = useState<ManualClip[]>([]);
+  const [manualStage, setManualStage] = useState<ManualStage>("select");
+  const [manualExportMode, setManualExportMode] =
+    useState<ManualExportMode>("combined");
+  const [manualExportJobs, setManualExportJobs] = useState<RenderJob[]>([]);
+  const [activeManualClipId, setActiveManualClipId] = useState("");
   const [planRevisionNeeded, setPlanRevisionNeeded] = useState(false);
   const [playheadSeconds, setPlayheadSeconds] = useState(
     DEMO_CANDIDATES[1].start,
@@ -304,18 +1042,26 @@ export default function Home() {
       try {
         const state = JSON.parse(saved) as {
           apiUrl?: string;
-          prompt?: string;
           targetDuration?: number;
           maxHighlights?: number;
           projectId?: string;
           assetId?: string;
+          projectFolders?: Record<string, string>;
+          editWorkflow?: EditWorkflow;
+          aiAssistance?: AiAssistance;
         };
-        if (state.apiUrl) setApiUrl(state.apiUrl);
-        if (state.prompt) setPrompt(state.prompt);
+        if (state.apiUrl && !window.cutroomDesktop) setApiUrl(state.apiUrl);
         if (state.targetDuration) setTargetDuration(state.targetDuration);
         if (state.maxHighlights) setMaxHighlights(state.maxHighlights);
         if (state.projectId) setProjectId(state.projectId);
         if (state.assetId) setAssetId(state.assetId);
+        if (state.projectFolders) setProjectFolders(state.projectFolders);
+        if (["manual", "automation"].includes(state.editWorkflow ?? "")) {
+          setEditWorkflow(state.editWorkflow as EditWorkflow);
+        }
+        if (["off", "review", "full"].includes(state.aiAssistance ?? "")) {
+          setAiAssistance(state.aiAssistance as AiAssistance);
+        }
       } catch {
         window.localStorage.removeItem(storageKey);
       }
@@ -324,18 +1070,52 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    const bridge = window.cutroomDesktop;
+    if (!bridge) return;
+    void bridge
+      .bootstrap()
+      .then(({ apiUrl: desktopApiUrl }) => {
+        setDesktopMode(true);
+        setApiUrl(desktopApiUrl);
+        setMode("live");
+        return connect(desktopApiUrl);
+      })
+      .catch((nextError) => {
+        setConnection("failed");
+        setError(
+          nextError instanceof Error
+            ? nextError.message
+            : "The desktop backend did not start",
+        );
+      });
+    // The native bridge is immutable for the lifetime of the desktop renderer.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
     window.localStorage.setItem(
       storageKey,
       JSON.stringify({
         apiUrl,
-        prompt,
         targetDuration,
         maxHighlights,
         projectId,
         assetId,
+        projectFolders,
+        editWorkflow,
+        aiAssistance,
       }),
     );
-  }, [apiUrl, prompt, targetDuration, maxHighlights, projectId, assetId]);
+  }, [
+    aiAssistance,
+    apiUrl,
+    assetId,
+    editWorkflow,
+    maxHighlights,
+    projectFolders,
+    projectId,
+    targetDuration,
+  ]);
 
   useEffect(() => {
     if (
@@ -522,11 +1302,27 @@ export default function Home() {
       ? demoApproved
       : Boolean(humanReview?.state.active_approval_id);
   const activeAsset = assets.find((asset) => asset.id === assetId);
+  const activeFolderPath =
+    Object.entries(projectFolders).find(([, id]) => id === projectId)?.[0] ??
+    "";
   const sourceDuration =
     mode === "demo"
       ? 1938
       : (activeAsset?.duration_seconds ??
         Math.max(1, ...candidates.map((candidate) => candidate.end)));
+  const selectedManual = selectedManualClips(manualClips);
+  const activeManualClip =
+    selectedManual.find((clip) => clip.id === activeManualClipId) ??
+    selectedManual[0];
+  const manualFocused = editWorkflow === "manual";
+  const previewSelection =
+    manualFocused && activeManualClip ? activeManualClip : selected;
+  const sourceMarkers = manualFocused
+    ? manualClips.map((clip) => ({
+        ...clip,
+        decision: clip.selected ? "accept" : "pending",
+      }))
+    : candidates;
   const maximumMinutes = Math.floor(targetDuration / 60);
   const maximumSeconds = Math.round(targetDuration % 60);
   const boundaryWindowStart = Math.min(boundaryWindow.start, sourceDuration);
@@ -561,7 +1357,8 @@ export default function Home() {
       activeTrimHistory.cursor < activeTrimHistory.entries.length - 1,
   );
   const sourceReady = mode === "demo" || Boolean(activeAsset);
-  const briefReady = Boolean(prompt.trim());
+  const briefReady =
+    editWorkflow === "automation" || selectedManual.length > 0;
   const analysisReady = candidates.length > 0;
   const reviewReady =
     analysisReady &&
@@ -570,8 +1367,14 @@ export default function Home() {
     !planRevisionNeeded &&
     isApproved;
   const exportReady = finalJob?.status === "succeeded";
-  const reviewerAvailable =
+  const reviewerConfigured =
     mode === "demo" || health?.highlight_reviewer === "ready";
+  const reviewerAvailable =
+    aiAssistance === "review" && reviewerConfigured;
+  const automationReady =
+    mode === "demo" || diagnostics?.tesseract.status === "ready";
+  const setupNeeded =
+    mode === "live" && connection === "connected" && showSetup;
   const workflowSteps = deriveWorkflowSteps({
     sourceReady,
     briefReady,
@@ -582,6 +1385,30 @@ export default function Home() {
     humanApproved: isApproved,
     finalRenderSucceeded: exportReady,
   });
+  const manualExportReady =
+    manualExportJobs.length > 0 &&
+    manualExportJobs.every((job) => job.status === "succeeded");
+  const visibleWorkflowSteps = editWorkflow === "manual"
+    ? [
+        { label: "Source", complete: sourceReady, current: !sourceReady },
+        {
+          label: "Select plays",
+          complete: manualStage !== "select",
+          current: manualStage === "select",
+        },
+        {
+          label: "Trim clips",
+          complete: manualStage === "export",
+          current: manualStage === "edit",
+        },
+        {
+          label: "Export",
+          complete: manualExportReady,
+          current: manualStage === "export" && !manualExportReady,
+        },
+      ]
+    : workflowSteps;
+
   const startPercent = selected
     ? Math.min(
         100,
@@ -601,34 +1428,67 @@ export default function Home() {
       )
     : 0;
 
-  async function connect() {
+  async function connect(requestedApiUrl?: string) {
+    const connectionUrl = requestedApiUrl ?? apiUrl;
+    if (requestedApiUrl) setApiUrl(requestedApiUrl);
     setConnection("checking");
     setError("");
     try {
-      const nextHealth = await requestJson<HealthStatus>(apiUrl, "/healthz");
-      const nextProjects = await requestJson<Project[]>(
-        apiUrl,
-        "/api/v1/projects",
+      const nextHealth = await requestJson<HealthStatus>(
+        connectionUrl,
+        "/healthz",
       );
+      const [nextProjects, nextDiagnostics] = await Promise.all([
+        requestJson<Project[]>(connectionUrl, "/api/v1/projects"),
+        requestJson<DesktopDiagnostics>(
+          connectionUrl,
+          "/api/v1/desktop/diagnostics",
+        ).catch(() => null),
+      ]);
       setHealth(nextHealth);
+      setDiagnostics(nextDiagnostics);
       setProjects(nextProjects);
       setConnection("connected");
       setMode("live");
       setNotice("Local backend connected");
-      const nextProjectId =
-        nextProjects.find((item) => item.id === projectId)?.id ??
-        nextProjects[0]?.id ??
-        "";
-      if (nextProjectId) {
-        setProjectId(nextProjectId);
-        await loadProject(nextProjectId, assetId);
-      }
     } catch (nextError) {
       setConnection("failed");
       setError(
         nextError instanceof Error
           ? nextError.message
           : "Could not reach the local backend",
+      );
+    }
+  }
+
+  async function chooseSource() {
+    if (!projectId) {
+      setError("Create or open a project before adding a recording");
+      return;
+    }
+    const selected = await window.cutroomDesktop?.selectMedia(
+      activeFolderPath || undefined,
+    );
+    if (!selected) return;
+    await importRecording(selected.path);
+  }
+
+  async function revealFinalOutput() {
+    if (!finalJob?.output_path || !window.cutroomDesktop) return;
+    await revealRenderOutput(finalJob);
+  }
+
+  async function revealRenderOutput(job: RenderJob) {
+    if (!job.output_path || !window.cutroomDesktop) return;
+    setError("");
+    try {
+      await window.cutroomDesktop.revealOutput(String(job.output_path));
+      setNotice("Export shown in Finder");
+    } catch (nextError) {
+      setError(
+        nextError instanceof Error
+          ? nextError.message
+          : "Could not open the output folder",
       );
     }
   }
@@ -684,6 +1544,7 @@ export default function Home() {
     setPreviewJobId("");
     setPreviewJob(null);
     setFinalJob(null);
+    setManualExportJobs([]);
     setPlayback(null);
     try {
       const [nextAssets, reviews, plans, jobs, workflows] = await Promise.all([
@@ -783,36 +1644,88 @@ export default function Home() {
     }
   }
 
-  async function createProject(event: FormEvent) {
-    event.preventDefault();
+  function clearProjectWorkspace() {
+    setAssets([]);
+    setAssetId("");
+    setReview(null);
+    setPlan(null);
+    setHumanReview(null);
+    setPlayback(null);
+    setPreviewJob(null);
+    setPreviewJobId("");
+    setFinalJob(null);
+    setManualExportJobs([]);
+  }
+
+  async function createProjectRecord(name: string) {
     setBusy("Creating project");
     setError("");
     try {
       const project = await requestJson<Project>(apiUrl, "/api/v1/projects", {
         method: "POST",
-        body: JSON.stringify({ name: projectName }),
+        body: JSON.stringify({ name }),
       });
       setProjects((current) => [...current, project]);
       setProjectId(project.id);
-      setAssets([]);
-      setReview(null);
-      setPlan(null);
-      setHumanReview(null);
-      setPlayback(null);
-      setPreviewJob(null);
-      setPreviewJobId("");
-      setFinalJob(null);
-      setNotice("Project created");
+      clearProjectWorkspace();
+      return project;
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Create failed");
+      return null;
     } finally {
       setBusy("");
     }
   }
 
-  async function importSource(event: FormEvent) {
+  async function createNewProject(event: FormEvent) {
     event.preventDefault();
-    if (!projectId || !sourcePath.trim()) return;
+    const name = projectName.trim();
+    if (!name) return;
+    const project = await createProjectRecord(name);
+    if (!project) return;
+    setShowSetup(false);
+    setNotice("Project created · add a recording to begin");
+  }
+
+  async function openExistingFolder() {
+    const selected = await window.cutroomDesktop?.selectFolder();
+    if (!selected) return;
+    setError("");
+    const mappedProject = projects.find(
+      (project) => project.id === projectFolders[selected.path],
+    );
+    let nextProject = mappedProject;
+    if (!nextProject) {
+      nextProject = await createProjectRecord(selected.name);
+      if (!nextProject) return;
+      setProjectFolders((current) => ({
+        ...current,
+        [selected.path]: nextProject.id,
+      }));
+    } else {
+      setProjectId(nextProject.id);
+      await loadProject(nextProject.id);
+    }
+    setShowSetup(false);
+    setNotice(
+      mappedProject
+        ? `Opened ${mappedProject.name}`
+        : `Video folder ready · add a recording to begin`,
+    );
+  }
+
+  async function openExistingWebProject(event: FormEvent) {
+    event.preventDefault();
+    if (!projectId) {
+      setError("Choose an existing project first");
+      return;
+    }
+    await loadProject(projectId);
+    setShowSetup(false);
+    setNotice("Project opened");
+  }
+
+  async function importRecording(localPath: string) {
     setBusy("Importing source");
     setError("");
     try {
@@ -821,7 +1734,7 @@ export default function Home() {
         `/api/v1/projects/${projectId}/assets/import`,
         {
           method: "POST",
-          body: JSON.stringify({ local_path: sourcePath.trim() }),
+          body: JSON.stringify({ local_path: localPath.trim() }),
         },
       );
       setAssets((current) => [
@@ -829,10 +1742,301 @@ export default function Home() {
         asset,
       ]);
       setAssetId(asset.id);
+      setManualClips([]);
+      setManualStage("select");
+      setManualExportJobs([]);
+      setActiveManualClipId("");
+      setSourcePath("");
       setNotice("Recording imported and probed");
       void preparePlayback(projectId, asset.id);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Import failed");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  function markManualPlay() {
+    if (!sourceReady) {
+      setError("Choose a recording before marking a play");
+      return;
+    }
+    const existing = manualClips.find(
+      (clip) => playheadSeconds >= clip.start && playheadSeconds <= clip.end,
+    );
+    if (existing) {
+      setManualClips((current) =>
+        current.map((clip) =>
+          clip.id === existing.id ? { ...clip, selected: true } : clip,
+        ),
+      );
+      setActiveManualClipId(existing.id);
+      setNotice(`${existing.title} already covers this moment`);
+      return;
+    }
+    const id = crypto.randomUUID();
+    const clip = createPlayAroundPlayhead(
+      playheadSeconds,
+      sourceDuration,
+      manualClips.length,
+      id,
+    );
+    setManualClips((current) =>
+      [...current, clip].sort((left, right) => left.start - right.start),
+    );
+    setActiveManualClipId(id);
+    setError("");
+    setNotice(`${clip.title} marked at ${formatTimestamp(playheadSeconds)}`);
+  }
+
+  function updateManualClip(id: string, patch: Partial<ManualClip>) {
+    setManualClips((current) =>
+      current.map((clip) => (clip.id === id ? { ...clip, ...patch } : clip)),
+    );
+    setError("");
+  }
+
+  function removeManualClip(id: string) {
+    setManualClips((current) => current.filter((clip) => clip.id !== id));
+    if (activeManualClipId === id) {
+      const next = selectedManual.find((clip) => clip.id !== id);
+      setActiveManualClipId(next?.id ?? "");
+    }
+    setNotice("Play removed from the manual edit");
+  }
+
+  function splitManualClip(id: string) {
+    const clip = manualClips.find((item) => item.id === id);
+    if (
+      !clip ||
+      playheadSeconds <= clip.start + 0.1 ||
+      playheadSeconds >= clip.end - 0.1
+    ) {
+      setError("Place the playhead inside the active clip before splitting");
+      return;
+    }
+    const secondId = crypto.randomUUID();
+    setManualClips((current) =>
+      current.flatMap((item) =>
+        item.id === id
+          ? [
+              { ...item, title: `${item.title} A`, end: playheadSeconds },
+              {
+                ...item,
+                id: secondId,
+                title: `${item.title} B`,
+                start: playheadSeconds,
+              },
+            ]
+          : item,
+      ),
+    );
+    setActiveManualClipId(secondId);
+    setNotice(`Split ${clip.title} at ${formatTimestamp(playheadSeconds)}`);
+  }
+
+  async function loadCreatedPlan(
+    result: {
+      plan: Plan;
+      review_session: ReviewSnapshot["session"];
+    },
+    completeCopy: (count: number) => string,
+  ) {
+    setPlan(result.plan);
+    const snapshot = await requestJson<ReviewSnapshot>(
+      apiUrl,
+      `/api/v1/projects/${projectId}/gaming/highlight-reviews/${result.review_session.id}`,
+    );
+    setReview(snapshot);
+    const firstCandidate = snapshot.session.candidates[0];
+    setSelectedId(firstCandidate?.id ?? "");
+    if (firstCandidate) {
+      setBoundaryDraft({
+        start: formatTimestamp(firstCandidate.start_seconds),
+        end: formatTimestamp(firstCandidate.end_seconds),
+      });
+      setBoundaryWindow(
+        createBoundaryWindow(
+          firstCandidate.start_seconds,
+          firstCandidate.end_seconds,
+          activeAsset?.duration_seconds ?? firstCandidate.end_seconds + 30,
+        ),
+      );
+      setPlayheadSeconds(firstCandidate.start_seconds);
+    }
+    const human = await requestJson<HumanReview>(
+      apiUrl,
+      `/api/v1/projects/${projectId}/gaming/highlight-reviews/${result.review_session.id}/human-review`,
+    );
+    setHumanReview(human);
+    setNotice(completeCopy(snapshot.metrics.candidate_count));
+    await renderPreview(result.plan.id);
+  }
+
+  async function requestManualPlan(clips: ManualClip[]) {
+    return await requestJson<{
+      plan: Plan;
+      review_session: ReviewSnapshot["session"];
+    }>(
+      apiUrl,
+      `/api/v1/projects/${projectId}/assets/${assetId}/gaming/manual-highlight-plans`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          brief: {
+            objective: "Keep the manually selected clips",
+            editing_profile: "gameplay_highlights",
+            aspect_ratio: "16:9",
+            style: "Exact human-selected gaming highlights",
+          },
+          clips: clips.map((clip) => ({
+            title: clip.title,
+            start_seconds: clip.start,
+            end_seconds: clip.end,
+          })),
+        }),
+      },
+    );
+  }
+
+  async function prepareManualExport() {
+    const validationError = validateManualClips(manualClips, sourceDuration);
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+    const clipsForReview = selectedManualClips(manualClips);
+    setDemoApproved(false);
+    setTrimDrafts({});
+    setTrimHistory({});
+    setManualSavedTrims({});
+    setPlanRevisionNeeded(false);
+    setPreviewJob(null);
+    setPreviewJobId("");
+    setFinalJob(null);
+    setManualExportJobs([]);
+    if (mode === "demo") {
+      setManualStage("export");
+      setNotice(
+        `Manual edit ready · ${clipsForReview.length} ${clipsForReview.length === 1 ? "clip" : "clips"}`,
+      );
+      return;
+    }
+    if (!projectId || !assetId) {
+      setError("Choose a project and recording first");
+      return;
+    }
+    setBusy("Preparing manual export");
+    setError("");
+    try {
+      const result = await requestManualPlan(clipsForReview);
+      setPlan(result.plan);
+      setReview(null);
+      setHumanReview(null);
+      setManualStage("export");
+      setNotice(`Manual edit ready · choose an export format`);
+    } catch (nextError) {
+      setError(
+        nextError instanceof Error
+          ? nextError.message
+          : "Manual export could not be prepared",
+      );
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function queueFinalPlan(planToRender: Plan) {
+    return await requestJson<RenderJob>(
+      apiUrl,
+      `/api/v1/projects/${projectId}/edit-plans/${planToRender.id}/renders`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          preset: {
+            profile: "final",
+            aspect_ratio: "16:9",
+            frames_per_second: 60,
+            transition_duration_seconds: 0.25,
+            audio_output_mode: "source_mix",
+          },
+        }),
+      },
+    );
+  }
+
+  async function exportManualCut() {
+    const clips = selectedManualClips(manualClips);
+    if (!clips.length) {
+      setError("Add at least one clip before exporting");
+      return;
+    }
+    if (mode === "demo") {
+      const count = manualExportMode === "combined"
+        ? 1
+        : manualExportMode === "separate"
+          ? clips.length
+          : clips.length + 1;
+      setManualExportJobs(
+        Array.from({ length: count }, (_, index) => ({
+          id: `demo-manual-export-${index}`,
+          status: "succeeded",
+          output_path: `/Users/you/Desktop/Cutroom Projects/Demo/Exports/export-${index + 1}.mp4`,
+        }) as RenderJob),
+      );
+      setNotice(`${count} local ${count === 1 ? "export" : "exports"} ready`);
+      return;
+    }
+    if (!plan) {
+      setError("Prepare the manual edit before exporting");
+      return;
+    }
+
+    setBusy("Rendering manual export");
+    setError("");
+    setManualExportJobs([]);
+    try {
+      const plans: Plan[] = [];
+      if (manualExportMode === "combined" || manualExportMode === "both") {
+        plans.push(plan);
+      }
+      if (manualExportMode === "separate" || manualExportMode === "both") {
+        const separateResults = await Promise.all(
+          clips.map((clip) => requestManualPlan([clip])),
+        );
+        plans.push(...separateResults.map((result) => result.plan));
+      }
+      const updateVisibleJob = (nextJob: RenderJob) => {
+        setManualExportJobs((current) => {
+          const exists = current.some((job) => job.id === nextJob.id);
+          return exists
+            ? current.map((job) => (job.id === nextJob.id ? nextJob : job))
+            : [...current, nextJob];
+        });
+      };
+      const completed = await runSequentialTasks(plans, async (planToRender, index) => {
+        setNotice(
+          `Rendering file ${index + 1} of ${plans.length} · completed files stay in Exports`,
+        );
+        const queued = await queueFinalPlan(planToRender);
+        updateVisibleJob(queued);
+        if (index === 0) setFinalJob(queued);
+        return await waitForJob(queued.id, (nextJob) => {
+          updateVisibleJob(nextJob);
+          if (index === 0) setFinalJob(nextJob);
+        });
+      });
+      setManualExportJobs(completed);
+      setFinalJob(completed[0] ?? null);
+      const failures = completed.filter((job) => job.status === "failed");
+      if (completed[0]?.status === "succeeded") setPreviewMode("reel");
+      setNotice(
+        failures.length
+          ? `${failures.length} export failed · the others remain in the project folder`
+          : `${completed.length} ${completed.length === 1 ? "file" : "files"} ready in Exports`,
+      );
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Manual export failed");
     } finally {
       setBusy("");
     }
@@ -859,6 +2063,12 @@ export default function Home() {
       setError("Choose a project and recording first");
       return;
     }
+    if (!automationReady) {
+      setError(
+        "Kill & teamfight detection needs Tesseract OCR. Use Manual mode until it is available.",
+      );
+      return;
+    }
     setBusy("Analysing recording");
     setError("");
     setTrimDrafts({});
@@ -879,48 +2089,23 @@ export default function Home() {
           method: "POST",
           body: JSON.stringify({
             brief: {
-              objective: prompt,
+              objective: "Detect League kills and combine nearby kills into teamfight clips",
               editing_profile: "gameplay_highlights",
               target_duration_seconds: targetDuration,
               aspect_ratio: "16:9",
-              style: "Tight, evidence-backed gaming highlight",
+              style: "Kill and teamfight clips",
               additional_instructions:
-                "Retain setup before important plays and remove downtime. Treat the duration as a maximum; a shorter valid edit is acceptable.",
+                "Keep setup before each detected fight and combine nearby kills. Treat the duration as a maximum; a shorter valid edit is acceptable.",
             },
             game_id: "league_of_legends",
             max_highlights: maxHighlights,
           }),
         },
       );
-      setPlan(result.plan);
-      const snapshot = await requestJson<ReviewSnapshot>(
-        apiUrl,
-        `/api/v1/projects/${projectId}/gaming/highlight-reviews/${result.review_session.id}`,
+      await loadCreatedPlan(
+        result,
+        (count) => `Automation complete · ${count} clips proposed`,
       );
-      setReview(snapshot);
-      const firstCandidate = snapshot.session.candidates[0];
-      setSelectedId(firstCandidate?.id ?? "");
-      if (firstCandidate) {
-        setBoundaryDraft({
-          start: formatTimestamp(firstCandidate.start_seconds),
-          end: formatTimestamp(firstCandidate.end_seconds),
-        });
-        setBoundaryWindow(
-          createBoundaryWindow(
-            firstCandidate.start_seconds,
-            firstCandidate.end_seconds,
-            activeAsset?.duration_seconds ?? firstCandidate.end_seconds + 30,
-          ),
-        );
-        setPlayheadSeconds(firstCandidate.start_seconds);
-      }
-      const human = await requestJson<HumanReview>(
-        apiUrl,
-        `/api/v1/projects/${projectId}/gaming/highlight-reviews/${result.review_session.id}/human-review`,
-      );
-      setHumanReview(human);
-      setNotice(`Analysis complete · ${snapshot.metrics.candidate_count} clips proposed`);
-      await renderPreview(result.plan.id);
     } catch (nextError) {
       setError(
         nextError instanceof Error ? nextError.message : "Analysis failed",
@@ -963,16 +2148,17 @@ export default function Home() {
     throw new Error(completed.error ?? "Preview render failed");
   }
 
-  async function waitForJob(jobId: string): Promise<RenderJob> {
-    for (let attempt = 0; attempt < 80; attempt += 1) {
-      const job = await requestJson<RenderJob>(
+  async function waitForJob(
+    jobId: string,
+    onUpdate?: (job: RenderJob) => void,
+  ): Promise<RenderJob> {
+    return await waitForTerminalJob(
+      () => requestJson<RenderJob>(
         apiUrl,
         `/api/v1/jobs/${jobId}`,
-      );
-      if (job.status === "succeeded" || job.status === "failed") return job;
-      await new Promise((resolve) => window.setTimeout(resolve, 750));
-    }
-    throw new Error("Render timed out before reaching a terminal state");
+      ),
+      onUpdate,
+    );
   }
 
   const decide = useCallback(
@@ -1297,9 +2483,9 @@ export default function Home() {
   function selectPreviewMode(nextMode: PreviewMode) {
     setPreviewMode(nextMode);
     window.requestAnimationFrame(() => {
-      if (!previewRef.current || !selected) return;
+      if (!previewRef.current || !previewSelection) return;
       if (nextMode === "source" || nextMode === "cut") {
-        seekPreview(selected.start);
+        seekPreview(previewSelection.start);
       }
     });
   }
@@ -1439,9 +2625,13 @@ export default function Home() {
   }
 
   async function startReviewer() {
+    if (aiAssistance === "off") {
+      setError("Turn AI assistance to Review before starting Agent 2");
+      return;
+    }
     if (!reviewerAvailable) {
       setError(
-        "Agent 2 is optional and not configured. You can continue with manual review and approval.",
+        "Review mode is saved, but a local reviewer model is not configured yet. Manual review and approval still work.",
       );
       return;
     }
@@ -1603,7 +2793,7 @@ export default function Home() {
   }
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell ${manualFocused ? "manual-editing" : ""}`}>
       <header className="topbar">
         <div className="brand-lockup">
           <button
@@ -1623,7 +2813,7 @@ export default function Home() {
           </div>
         </div>
         <nav className="workflow-steps" aria-label="Workflow progress">
-          {workflowSteps.map((step, index) => (
+          {visibleWorkflowSteps.map((step, index) => (
               <span
                 key={step.label}
                 className={`${step.complete ? "complete" : ""} ${
@@ -1644,35 +2834,156 @@ export default function Home() {
                 ? "Local backend"
                 : "Disconnected"}
           </span>
-          <button
-            className="mobile-panel-button"
-            onClick={() => setRightOpen((value) => !value)}
-            aria-label="Toggle evidence inspector"
-            aria-expanded={rightOpen}
-          >
-            Inspect
-          </button>
+          {!manualFocused && (
+            <button
+              className="mobile-panel-button"
+              onClick={() => setRightOpen((value) => !value)}
+              aria-label="Toggle evidence inspector"
+              aria-expanded={rightOpen}
+            >
+              Inspect
+            </button>
+          )}
         </div>
       </header>
 
-      <div className="workspace">
+      {setupNeeded && (
+        <section className="setup-screen" aria-labelledby="setup-title">
+          <div className="setup-orbit setup-orbit-one" aria-hidden="true" />
+          <div className="setup-orbit setup-orbit-two" aria-hidden="true" />
+          <div className="setup-card">
+            <div className="setup-intro">
+              <span className="eyebrow">Welcome to Cutroom</span>
+              <h1 id="setup-title">Where would you like to begin?</h1>
+              <p>
+                Start a fresh clips project or reopen a video folder you have
+                used before. Recordings are added after you enter the editor.
+              </p>
+            </div>
+            <div className="setup-choices">
+              <form
+                className="setup-choice-card create"
+                onSubmit={createNewProject}
+              >
+                <span className="setup-choice-icon" aria-hidden="true">
+                  +
+                </span>
+                <div>
+                  <span className="setup-choice-kicker">Start fresh</span>
+                  <h2>Create new project</h2>
+                  <p>
+                    Cutroom creates a protected workspace for previews and
+                    finished clips. Add your first recording inside.
+                  </p>
+                </div>
+                <label>
+                  Project name
+                  <input
+                    value={projectName}
+                    onChange={(event) => setProjectName(event.target.value)}
+                    placeholder="League highlights"
+                  />
+                </label>
+                <button
+                  className="primary-button"
+                  disabled={!projectName.trim() || Boolean(busy)}
+                >
+                  {busy === "Creating project"
+                    ? "Creating…"
+                    : "Create & enter"}
+                </button>
+              </form>
+
+              <form
+                className="setup-choice-card existing"
+                onSubmit={
+                  desktopMode
+                    ? (event) => {
+                        event.preventDefault();
+                        void openExistingFolder();
+                      }
+                    : openExistingWebProject
+                }
+              >
+                <span className="setup-choice-icon" aria-hidden="true">
+                  ↗
+                </span>
+                <div>
+                  <span className="setup-choice-kicker">Continue editing</span>
+                  <h2>Open existing video folder</h2>
+                  <p>
+                    Choose its folder in Finder. Cutroom will reopen the linked
+                    project or prepare that folder for editing.
+                  </p>
+                </div>
+                {!desktopMode && (
+                  <label>
+                    Existing project
+                    <select
+                      value={projectId}
+                      onChange={(event) => setProjectId(event.target.value)}
+                    >
+                      <option value="">Choose a project</option>
+                      {projects.map((project) => (
+                        <option value={project.id} key={project.id}>
+                          {project.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                <button
+                  className="secondary-button"
+                  disabled={
+                    Boolean(busy) || (!desktopMode && !projectId)
+                  }
+                >
+                  {busy === "Loading project"
+                    ? "Opening…"
+                    : desktopMode
+                      ? "Choose folder in Finder"
+                      : "Open project"}
+                </button>
+              </form>
+            </div>
+            <p className="setup-footnote">
+              Original recordings are never changed or deleted.
+            </p>
+            {error && (
+              <div className="setup-error" role="alert">
+                {error}
+                <button type="button" onClick={() => setError("")}>
+                  Dismiss
+                </button>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+
+      <div
+        className={`workspace ${setupNeeded ? "setup-hidden" : ""} ${manualFocused ? "manual-focused" : ""}`}
+      >
         <aside className={`left-rail ${leftOpen ? "open" : ""}`}>
           <section className="rail-section">
             <div className="section-heading">
               <span>Workspace</span>
-              <button
-                className="text-button"
-                onClick={() => {
-                  setMode(mode === "demo" ? "live" : "demo");
-                  setLeftOpen(false);
-                }}
-              >
-                {mode === "demo" ? "Use backend" : "Use demo"}
-              </button>
+              {!desktopMode && (
+                <button
+                  className="text-button"
+                  onClick={() => {
+                    setMode(mode === "demo" ? "live" : "demo");
+                    setLeftOpen(false);
+                  }}
+                >
+                  {mode === "demo" ? "Use backend" : "Use demo"}
+                </button>
+              )}
             </div>
 
             {mode === "live" ? (
-              <div className="connection-panel">
+              !desktopMode && (
+                <div className="connection-panel">
                 <label htmlFor="api-url">Backend address</label>
                 <div className="inline-field">
                   <input
@@ -1681,11 +2992,15 @@ export default function Home() {
                     onChange={(event) => setApiUrl(event.target.value)}
                     spellCheck={false}
                   />
-                  <button onClick={connect} disabled={connection === "checking"}>
+                  <button
+                    onClick={() => void connect()}
+                    disabled={connection === "checking"}
+                  >
                     {connection === "checking" ? "…" : "Connect"}
                   </button>
                 </div>
               </div>
+              )
             ) : (
               <button
                 className="project-card selected"
@@ -1702,43 +3017,27 @@ export default function Home() {
             )}
 
             {mode === "live" && connection === "connected" && (
-              <>
-                <label className="field-label" htmlFor="project-select">
-                  Project
-                </label>
-                <select
-                  id="project-select"
-                  value={projectId}
-                  onChange={(event) => {
-                    setProjectId(event.target.value);
-                    void loadProject(event.target.value);
-                  }}
-                >
-                  <option value="">Choose project</option>
-                  {projects.map((project) => (
-                    <option value={project.id} key={project.id}>
-                      {project.name}
-                    </option>
-                  ))}
-                </select>
-                <form className="compact-form" onSubmit={createProject}>
-                  <label htmlFor="project-name">New project</label>
-                  <div className="inline-field">
-                    <input
-                      id="project-name"
-                      value={projectName}
-                      onChange={(event) => setProjectName(event.target.value)}
-                    />
-                    <button disabled={!projectName.trim()}>Create</button>
-                  </div>
-                </form>
-              </>
+              <button
+                className="project-card selected"
+                onClick={() => setShowSetup(true)}
+              >
+                <span className="project-thumb" aria-hidden="true">
+                  {activeAsset ? formatTime(activeAsset.duration_seconds) : "NEW"}
+                </span>
+                <span>
+                  <strong>
+                    {projects.find((project) => project.id === projectId)?.name ??
+                      "Clips project"}
+                  </strong>
+                  <small>Switch or create project</small>
+                </span>
+              </button>
             )}
           </section>
 
           <section className="rail-section source-section">
             <div className="section-heading">
-              <span>Source</span>
+              <span>Recordings</span>
               <span className="count">{mode === "demo" ? 1 : assets.length}</span>
             </div>
             {mode === "demo" ? (
@@ -1753,11 +3052,59 @@ export default function Home() {
               </button>
             ) : (
               <>
+                <button
+                  className="add-recording-button"
+                  onClick={() => void chooseSource()}
+                  disabled={Boolean(busy)}
+                >
+                  <span aria-hidden="true">+</span>
+                  <span>
+                    <strong>
+                      {assets.length ? "Add another recording" : "Add recording"}
+                    </strong>
+                    <small>MKV, MP4, MOV, AVI, or WebM</small>
+                  </span>
+                </button>
+                {!desktopMode && (
+                  <form
+                    className="path-import"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      if (sourcePath.trim()) {
+                        void importRecording(sourcePath);
+                      }
+                    }}
+                  >
+                    <input
+                      aria-label="Recording path"
+                      placeholder="/Users/you/Movies/game.mkv"
+                      value={sourcePath}
+                      onChange={(event) => setSourcePath(event.target.value)}
+                    />
+                    <button disabled={!sourcePath.trim() || Boolean(busy)}>
+                      Import
+                    </button>
+                  </form>
+                )}
+                {!assets.length && (
+                  <div className="empty-source">
+                    <span aria-hidden="true">VIDEO</span>
+                    <strong>Upload a recording to begin</strong>
+                    <small>
+                      Choose an existing clip or add a full gameplay recording.
+                    </small>
+                  </div>
+                )}
                 {assets.map((asset) => (
                   <button
                     key={asset.id}
                     className={`source-row ${assetId === asset.id ? "selected" : ""}`}
                     onClick={() => {
+                      if (assetId !== asset.id) {
+                        setManualClips([]);
+                        setManualStage("select");
+                        setActiveManualClipId("");
+                      }
                       void loadProject(projectId, asset.id);
                       setLeftOpen(false);
                     }}
@@ -1779,25 +3126,6 @@ export default function Home() {
                     </span>
                   </button>
                 ))}
-                <form className="compact-form" onSubmit={importSource}>
-                  <label htmlFor="source-path">Import local recording</label>
-                  <input
-                    id="source-path"
-                    placeholder="/Users/matthew/Movies/game.mkv"
-                    value={sourcePath}
-                    onChange={(event) => setSourcePath(event.target.value)}
-                    spellCheck={false}
-                  />
-                  <button
-                    className="secondary-button"
-                    disabled={!projectId || !sourcePath.trim()}
-                  >
-                    Import from allowed folder
-                  </button>
-                  <small>
-                    The backend checks the path against configured media roots.
-                  </small>
-                </form>
               </>
             )}
           </section>
@@ -1820,11 +3148,31 @@ export default function Home() {
                   </small>
                 </div>
               </li>
-              <li className={candidates.length ? "done" : ""}>
+              <li
+                className={
+                  editWorkflow === "manual"
+                    ? manualStage === "export"
+                      ? "done"
+                      : manualClips.length
+                        ? "active"
+                        : ""
+                    : candidates.length
+                      ? "done"
+                      : ""
+                }
+              >
                 <span />
                 <div>
-                  <strong>Evidence analysed</strong>
-                  <small>OCR + audio candidate scoring</small>
+                  <strong>
+                    {editWorkflow === "automation"
+                      ? "Evidence analysed"
+                      : "Manual first cut"}
+                  </strong>
+                  <small>
+                    {editWorkflow === "automation"
+                      ? "Kill OCR + teamfight merging"
+                      : "Exact ranges chosen by you"}
+                  </small>
                 </div>
               </li>
               <li
@@ -1842,20 +3190,36 @@ export default function Home() {
                 <div>
                   <strong>Independent review · optional</strong>
                   <small>
-                    {!reviewerAvailable
-                      ? "Reviewer not configured"
+                    {aiAssistance === "off"
+                      ? "AI assistance off"
+                      : !reviewerConfigured
+                        ? "Local reviewer not configured"
                       : workflow
-                      ? statusLabel(workflow.state)
-                      : "Waiting for reviewer"}
+                        ? statusLabel(workflow.state)
+                        : "Ready after preview"}
                   </small>
                 </div>
               </li>
-              <li className={reviewReady ? "done" : analysisReady ? "active" : ""}>
+              <li
+                className={
+                  manualFocused
+                    ? ""
+                    : reviewReady
+                      ? "done"
+                      : analysisReady
+                        ? "active"
+                        : ""
+                }
+              >
                 <span />
                 <div>
-                  <strong>Human approval</strong>
+                  <strong>{manualFocused ? "Manual cuts reviewed" : "Human approval"}</strong>
                   <small>
-                    {hasUnsavedTrims
+                    {manualFocused
+                      ? manualStage === "export"
+                        ? "Completed while trimming"
+                        : "Review each clip while trimming"
+                      : hasUnsavedTrims
                       ? "Unsaved trim changes"
                       : planRevisionNeeded
                         ? "New plan version required"
@@ -1865,12 +3229,24 @@ export default function Home() {
                   </small>
                 </div>
               </li>
-              <li className={exportReady ? "done" : reviewReady ? "active" : ""}>
+              <li
+                className={
+                  manualFocused
+                    ? ""
+                    : exportReady
+                      ? "done"
+                      : reviewReady
+                        ? "active"
+                        : ""
+                }
+              >
                 <span />
                 <div>
-                  <strong>Final output</strong>
+                  <strong>{manualFocused ? "Local export" : "Final output"}</strong>
                   <small>
-                    {finalJob?.status
+                    {manualFocused && manualExportReady
+                      ? `${manualExportJobs.length} file${manualExportJobs.length === 1 ? "" : "s"} ready`
+                      : finalJob?.status
                       ? statusLabel(finalJob.status)
                       : "Not rendered"}
                   </small>
@@ -1878,13 +3254,71 @@ export default function Home() {
               </li>
             </ol>
           </section>
+
+          {mode === "live" && diagnostics && (
+            <section className="rail-section diagnostics-section">
+              <div className="section-heading">
+                <span>System check</span>
+                <span className={`diagnostic-summary ${diagnostics.status}`}>
+                  {diagnostics.status}
+                </span>
+              </div>
+              <ul className="diagnostic-list">
+                {[
+                  {
+                    label: "Database",
+                    status: diagnostics.database,
+                    detail: "Project history",
+                  },
+                  {
+                    label: "Workspace",
+                    status: diagnostics.workspace,
+                    detail: formatStorage(diagnostics.workspace_free_bytes),
+                  },
+                  {
+                    label: diagnostics.ffmpeg.name,
+                    status: diagnostics.ffmpeg.status,
+                    detail: diagnostics.ffmpeg.version ?? "Required for rendering",
+                  },
+                  {
+                    label: diagnostics.ffprobe.name,
+                    status: diagnostics.ffprobe.status,
+                    detail: diagnostics.ffprobe.version ?? "Required for imports",
+                  },
+                  {
+                    label: diagnostics.tesseract.name,
+                    status: diagnostics.tesseract.status,
+                    detail:
+                      diagnostics.tesseract.version ??
+                      "Needed for Kill & teamfight detection",
+                  },
+                ].map((item) => (
+                  <li key={item.label}>
+                    <span className={item.status} aria-hidden="true" />
+                    <div>
+                      <strong>{item.label}</strong>
+                      <small>{item.detail}</small>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
         </aside>
 
-        <section className="editor">
+        <section
+          className={`editor ${manualFocused && manualStage === "edit" ? "manual-trim-layout" : ""}`}
+        >
           <div className="editor-header">
             <div>
               <span className="eyebrow">League of Legends · Gameplay highlights</span>
-              <h1>{plan?.title ?? "Ranked session 24"}</h1>
+              <h1>
+                {plan?.title ??
+                  (mode === "live"
+                    ? projects.find((project) => project.id === projectId)
+                        ?.name ?? "New clips project"
+                    : "Ranked session 24")}
+              </h1>
             </div>
             <div className="plan-meta">
               <span>
@@ -1902,7 +3336,13 @@ export default function Home() {
                       : "unapproved"
                 }
               >
-                {hasUnsavedTrims
+                {manualFocused
+                  ? manualStage === "export"
+                    ? manualExportReady
+                      ? "Export ready"
+                      : "Ready to export"
+                    : "Manual editing"
+                  : hasUnsavedTrims
                   ? "Unsaved trim"
                   : planRevisionNeeded
                     ? "Revision needed"
@@ -1913,117 +3353,266 @@ export default function Home() {
             </div>
           </div>
 
+          {mode === "live" && !activeAsset && (
+            <section className="empty-project-callout" aria-labelledby="empty-project-title">
+              <span className="empty-project-icon" aria-hidden="true">
+                ▶
+              </span>
+              <div>
+                <span className="eyebrow">Project ready</span>
+                <h2 id="empty-project-title">Upload a recording to begin</h2>
+                <p>
+                  Choose an existing video clip or a full gameplay recording.
+                  Your original file stays untouched.
+                </p>
+              </div>
+              <button
+                className="primary-button"
+                onClick={() => void chooseSource()}
+                disabled={Boolean(busy)}
+              >
+                {busy === "Importing source" ? "Importing…" : "Choose recording"}
+              </button>
+            </section>
+          )}
+
+          {(editWorkflow === "automation" || manualStage === "select") && (
+          <section className="workflow-panel" aria-labelledby="workflow-mode-title">
+            <div className="workflow-panel-heading">
+              <div>
+                <span className="eyebrow">Workflow setup</span>
+                <h2 id="workflow-mode-title">Choose how the first cut is made</h2>
+              </div>
+              <span className="saved-setting">Saved on this Mac</span>
+            </div>
+            <div className="workflow-choice-grid">
+              <button
+                className={editWorkflow === "manual" ? "selected" : ""}
+                onClick={() => {
+                  setEditWorkflow("manual");
+                  setManualStage("select");
+                  setPreviewMode("source");
+                }}
+                aria-pressed={editWorkflow === "manual"}
+              >
+                <strong>Manual</strong>
+                <span>You choose exact In and Out times. No detector or AI needed.</span>
+              </button>
+              <button
+                className={editWorkflow === "automation" ? "selected" : ""}
+                onClick={() => setEditWorkflow("automation")}
+                aria-pressed={editWorkflow === "automation"}
+              >
+                <strong>Kill &amp; teamfight detection</strong>
+                <span>Find visible League kills and merge nearby kills. No LLM.</span>
+              </button>
+            </div>
+            {editWorkflow === "automation" && <div className="ai-setting">
+              <div>
+                <strong>AI assistance</strong>
+                <small>
+                  Separate from kill detection. Rendering and detection never send a text prompt.
+                </small>
+              </div>
+              <div className="ai-options" role="group" aria-label="AI assistance">
+                <button
+                  className={aiAssistance === "off" ? "selected" : ""}
+                  onClick={() => setAiAssistance("off")}
+                  aria-pressed={aiAssistance === "off"}
+                >
+                  Off
+                </button>
+                <button
+                  className={aiAssistance === "review" ? "selected" : ""}
+                  onClick={() => setAiAssistance("review")}
+                  aria-pressed={aiAssistance === "review"}
+                >
+                  Review
+                </button>
+                <button disabled title="Full local-model editing will be added later">
+                  Full · later
+                </button>
+              </div>
+              <small className="ai-setting-status">
+                {aiAssistance === "off"
+                  ? "No model will be called."
+                  : reviewerConfigured
+                    ? "Independent AI review is ready after preview rendering."
+                    : "Review mode is saved, but no local reviewer model is configured yet."}
+              </small>
+            </div>}
+          </section>
+          )}
+
+          {editWorkflow === "automation" && (
           <section className="brief-panel" aria-labelledby="brief-title">
             <div className="brief-heading">
               <div>
-                <span className="eyebrow">Editing brief</span>
-                <h2 id="brief-title">Tell the editor what matters</h2>
+                <span className="eyebrow">Deterministic automation</span>
+                <h2 id="brief-title">Kill &amp; teamfight detection</h2>
               </div>
               <button
                 className="primary-button"
                 onClick={runAnalysis}
-                disabled={Boolean(busy)}
+                disabled={
+                  Boolean(busy) ||
+                  !sourceReady ||
+                  !automationReady
+                }
               >
-                {busy === "Analysing recording" ? "Analysing…" : "Run analysis"}
+                {busy === "Analysing recording"
+                  ? "Analysing…"
+                  : "Detect kills & teamfights"}
               </button>
             </div>
-            <label htmlFor="editing-prompt" className="sr-only">
-              Editing instructions
-            </label>
-            <textarea
-              id="editing-prompt"
-              value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
-              rows={3}
-            />
-            <div className="brief-controls">
-              <div className="duration-control">
-                <span className="control-label">Max duration</span>
-                <div className="duration-inputs">
+            <>
+                <div className="detector-summary">
+                  <div>
+                    <span className="detector-icon">K</span>
+                    <strong>Champion kills</strong>
+                    <small>Reads visible League kill announcements</small>
+                  </div>
+                  <div>
+                    <span className="detector-icon">×2</span>
+                    <strong>Multi-kills</strong>
+                    <small>Prioritises double, triple, quadra, and penta kills</small>
+                  </div>
+                  <div>
+                    <span className="detector-icon">TF</span>
+                    <strong>Teamfights</strong>
+                    <small>Nearby kills are combined into one continuous clip</small>
+                  </div>
+                </div>
+                {!automationReady && (
+                  <div className="automation-requirement" role="status">
+                    <strong>Kill detection needs Tesseract OCR.</strong>
+                    <span>
+                      Manual mode is available now. Batch 4 can bundle this
+                      detector so viewers do not install it separately.
+                    </span>
+                  </div>
+                )}
+                <div className="brief-controls">
+                  <div className="duration-control">
+                    <span className="control-label">Max duration</span>
+                    <div className="duration-inputs">
+                      <label>
+                        <span className="sr-only">Maximum minutes</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={30}
+                          value={maximumMinutes}
+                          onChange={(event) =>
+                            updateMaximumDuration(
+                              "minutes",
+                              Number(event.target.value),
+                            )
+                          }
+                          aria-label="Maximum minutes"
+                        />
+                        <small>min</small>
+                      </label>
+                      <span className="duration-separator">:</span>
+                      <label>
+                        <span className="sr-only">Maximum seconds</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={59}
+                          value={maximumSeconds}
+                          onChange={(event) =>
+                            updateMaximumDuration(
+                              "seconds",
+                              Number(event.target.value),
+                            )
+                          }
+                          aria-label="Maximum seconds"
+                        />
+                        <small>sec</small>
+                      </label>
+                    </div>
+                    <small className="duration-help">
+                      Upper limit · shorter valid reels still continue
+                    </small>
+                  </div>
                   <label>
-                    <span className="sr-only">Maximum minutes</span>
+                    Max clips
                     <input
                       type="number"
-                      min={0}
-                      max={30}
-                      value={maximumMinutes}
+                      min={1}
+                      max={100}
+                      value={maxHighlights}
                       onChange={(event) =>
-                        updateMaximumDuration(
-                          "minutes",
-                          Number(event.target.value),
-                        )
+                        setMaxHighlights(Number(event.target.value))
                       }
-                      aria-label="Maximum minutes"
                     />
-                    <small>min</small>
                   </label>
-                  <span className="duration-separator">:</span>
                   <label>
-                    <span className="sr-only">Maximum seconds</span>
-                  <input
-                    type="number"
-                      min={0}
-                      max={59}
-                      value={maximumSeconds}
-                    onChange={(event) =>
-                        updateMaximumDuration(
-                          "seconds",
-                          Number(event.target.value),
-                        )
-                    }
-                      aria-label="Maximum seconds"
-                  />
-                    <small>sec</small>
+                    Format
+                    <select defaultValue="16:9">
+                      <option>16:9</option>
+                      <option disabled>9:16 · later milestone</option>
+                    </select>
                   </label>
+                  <span className="safety-note">
+                    Publishing and source deletion are disabled
+                  </span>
                 </div>
-                <small className="duration-help">
-                  Upper limit · shorter valid reels still continue
-                </small>
-              </div>
-              <label>
-                Max clips
-                <input
-                  type="number"
-                  min={1}
-                  max={100}
-                  value={maxHighlights}
-                  onChange={(event) =>
-                    setMaxHighlights(Number(event.target.value))
-                  }
-                />
-              </label>
-              <label>
-                Format
-                <select defaultValue="16:9">
-                  <option>16:9</option>
-                  <option disabled>9:16 · later milestone</option>
-                </select>
-              </label>
-              <span className="safety-note">
-                Publishing and source deletion are disabled
-              </span>
-            </div>
+              </>
           </section>
+          )}
 
           <section className="preview-workspace" aria-label="Video preview">
             <div className="preview-toolbar">
               <div>
                 <span className="eyebrow">Preview</span>
                 <strong>
-                  {previewMode === "source"
+                  {manualFocused && manualStage === "select"
+                    ? "Find the moments you remember"
+                    : manualFocused && manualStage === "edit"
+                      ? activeManualClip?.title ?? "Selected clip"
+                      : manualFocused && manualStage === "export"
+                        ? manualExportReady ? "Finished video" : "Your trimmed cut"
+                      : previewMode === "source"
                     ? "Source overview"
                     : previewMode === "cut"
                       ? "Selected cut"
                       : "Generated reel"}
                 </strong>
                 <small>
-                  {previewMode === "source"
+                  {manualFocused && manualStage === "select"
+                    ? "Scrub and pause near the action, then mark the play below."
+                    : manualFocused && manualStage === "edit"
+                      ? "Playback loops inside the active In and Out points."
+                      : manualFocused && manualStage === "export"
+                        ? manualExportReady
+                          ? "Your local export is ready."
+                          : "Choose an export format below. Nothing will be uploaded."
+                      : previewMode === "source"
                     ? "Inspect the full recording around every detection."
                     : previewMode === "cut"
                       ? "Playback is limited to the current In and Out points."
                       : "Watch the combined result after rendering."}
                 </small>
               </div>
+              <div className="preview-toolbar-actions">
+              {manualFocused && manualStage === "edit" && activeManualClip && (
+                <output className="manual-preview-time" aria-live="polite">
+                  <span>Preview position</span>
+                  <strong>{formatTimestamp(playheadSeconds)}</strong>
+                </output>
+              )}
+              {manualFocused && manualStage === "select" && (
+                <button
+                  className="primary-button manual-quick-mark"
+                  onClick={markManualPlay}
+                  disabled={!sourceReady || Boolean(busy)}
+                >
+                  <span aria-hidden="true">✂</span>
+                  Mark play at {formatTimestamp(playheadSeconds)}
+                </button>
+              )}
               <div className="preview-switch" role="group" aria-label="Preview mode">
                 <button
                   className={previewMode === "source" ? "active" : ""}
@@ -2045,6 +3634,7 @@ export default function Home() {
                   Generated reel
                 </button>
               </div>
+              </div>
             </div>
 
             <div className="viewer">
@@ -2056,19 +3646,19 @@ export default function Home() {
                   preload="metadata"
                   src={activeMediaUrl}
                   onLoadedMetadata={() => {
-                    if (previewMode !== "reel" && selected) {
-                      seekPreview(selected.start);
+                    if (previewMode !== "reel" && previewSelection) {
+                      seekPreview(previewSelection.start);
                     }
                   }}
                   onPlay={() => {
                     if (
                       previewMode === "cut" &&
-                      selected &&
+                      previewSelection &&
                       previewRef.current &&
-                      (previewRef.current.currentTime < selected.start ||
-                        previewRef.current.currentTime >= selected.end)
+                      (previewRef.current.currentTime < previewSelection.start ||
+                        previewRef.current.currentTime >= previewSelection.end)
                     ) {
-                      seekPreview(selected.start);
+                      seekPreview(previewSelection.start);
                     }
                   }}
                   onTimeUpdate={() => {
@@ -2077,12 +3667,12 @@ export default function Home() {
                     }
                     if (
                       previewMode === "cut" &&
-                      selected &&
+                      previewSelection &&
                       previewRef.current &&
-                      previewRef.current.currentTime >= selected.end
+                      previewRef.current.currentTime >= previewSelection.end
                     ) {
                       previewRef.current.pause();
-                      seekPreview(selected.start);
+                      seekPreview(previewSelection.start);
                     }
                   }}
                   onError={() =>
@@ -2152,12 +3742,13 @@ export default function Home() {
                           ? "Current cut"
                           : "Generated reel"}
                     </span>
-                    <strong>{selected?.title ?? "Select a highlight"}</strong>
+                    <strong>{previewSelection?.title ?? "Select a highlight"}</strong>
                   </div>
                 </div>
               )}
             </div>
-            {previewMode !== "reel" && (
+            {previewMode !== "reel" &&
+              !(manualFocused && manualStage === "edit") && (
               <div className="source-scrubber">
                 <div className="source-scrubber-heading">
                   <span>
@@ -2171,11 +3762,11 @@ export default function Home() {
                 </div>
                 <div className="source-scrub-track">
                   <div className="source-detections" aria-hidden="true">
-                    {candidates.map((candidate) => (
+                    {sourceMarkers.map((candidate) => (
                       <span
                         key={candidate.id}
                         className={`${candidate.decision} ${
-                          candidate.id === selected?.id ? "selected" : ""
+                          candidate.id === previewSelection?.id ? "selected" : ""
                         }`}
                         style={{
                           left: `${(candidate.start / sourceDuration) * 100}%`,
@@ -2206,12 +3797,86 @@ export default function Home() {
             )}
           </section>
 
+          {editWorkflow === "manual" && manualStage !== "export" && (
+            <ManualWorkbench
+              stage={manualStage}
+              clips={manualClips}
+              activeClipId={activeManualClipId}
+              playheadSeconds={playheadSeconds}
+              sourceDuration={sourceDuration}
+              busy={Boolean(busy)}
+              onStageChange={(nextStage) => {
+                if (nextStage === "edit") {
+                  const first =
+                    selectedManual.find(
+                      (clip) => clip.id === activeManualClipId,
+                    ) ?? selectedManual[0];
+                  if (!first) return;
+                  setActiveManualClipId(first.id);
+                  setPreviewMode("cut");
+                  window.requestAnimationFrame(() => {
+                    seekPreview(first.start);
+                    window.scrollTo({ top: 0, behavior: "auto" });
+                  });
+                } else {
+                  setPreviewMode("source");
+                }
+                setManualStage(nextStage);
+                setRightOpen(false);
+              }}
+              onMarkPlay={markManualPlay}
+              onToggleClip={(id) => {
+                setManualClips((current) =>
+                  current.map((clip) =>
+                    clip.id === id
+                      ? { ...clip, selected: !clip.selected }
+                      : clip,
+                  ),
+                );
+              }}
+              onSelectClip={setActiveManualClipId}
+              onUpdateClip={updateManualClip}
+              onRemoveClip={removeManualClip}
+              onSplitClip={splitManualClip}
+              onSeek={seekPreview}
+              onPrepareExport={() => void prepareManualExport()}
+            />
+          )}
+
+          {editWorkflow === "manual" && manualStage === "export" && (
+            <ManualExportPanel
+              clips={selectedManual}
+              exportMode={manualExportMode}
+              jobs={manualExportJobs}
+              projectPath={projects.find((project) => project.id === projectId)?.workspace_path?.toString()}
+              busy={Boolean(busy)}
+              onModeChange={(nextMode) => {
+                setManualExportMode(nextMode);
+                setManualExportJobs([]);
+              }}
+              onExport={() => void exportManualCut()}
+              onBack={() => {
+                setManualStage("edit");
+                setManualExportJobs([]);
+                setPreviewMode("cut");
+                const first = selectedManual[0];
+                if (first) {
+                  setActiveManualClipId(first.id);
+                  window.requestAnimationFrame(() => seekPreview(first.start));
+                }
+              }}
+              onReveal={(job) => void revealRenderOutput(job)}
+            />
+          )}
+
+          {editWorkflow === "automation" && (
           <section className="timeline" aria-labelledby="timeline-title">
             <div className="timeline-header">
               <div>
                 <span className="eyebrow">Review detected clips</span>
                 <h2 id="timeline-title">
-                  {candidates.length} proposed clips · {formatTime(reelDuration)}
+                  {candidates.length} proposed {candidates.length === 1 ? "clip" : "clips"} ·{" "}
+                  {formatTime(reelDuration)}
                 </h2>
                 <small className={hasUnsavedTrims ? "unsaved-copy" : ""}>
                   {hasUnsavedTrims
@@ -2229,7 +3894,9 @@ export default function Home() {
                     !reviewerAvailable || (mode === "live" && !previewJobId)
                   }
                   title={
-                    reviewerAvailable
+                    aiAssistance === "off"
+                      ? "Turn AI assistance to Review to enable Agent 2"
+                      : reviewerAvailable
                       ? "Run an optional independent review"
                       : "Configure a reviewer model to enable Agent 2"
                   }
@@ -2497,6 +4164,7 @@ export default function Home() {
               ))}
             </div>
           </section>
+          )}
         </section>
 
         <aside className={`inspector ${rightOpen ? "open" : ""}`}>
@@ -2722,9 +4390,11 @@ export default function Home() {
               </>
             ) : (
               <p>
-                {reviewerAvailable
+                {aiAssistance === "off"
+                  ? "AI assistance is off. Manual review and exact-version human approval remain fully available."
+                  : reviewerAvailable
                   ? "Optional: run the independent reviewer after the preview is ready. Agent approval never replaces your approval."
-                  : "Agent 2 is not configured. Manual review and exact-version human approval remain fully available."}
+                  : "Review mode is selected, but no local reviewer model is configured. Manual review remains fully available."}
               </p>
             )}
             {workflow?.error && <p className="inline-error">{workflow.error}</p>}
@@ -2732,14 +4402,19 @@ export default function Home() {
         </aside>
       </div>
 
-      <footer className="approval-bar">
+      <footer
+        className={`approval-bar ${setupNeeded ? "setup-hidden" : ""} ${manualFocused ? "manual-editing" : ""}`}
+      >
         <div className="approval-summary" role="status" aria-live="polite">
           <span className={error ? "error-indicator" : "status-indicator"} />
           <div>
             <strong>{error || busy || notice}</strong>
             <small>
-              {acceptedCount} kept · {rejectedCount} rejected · {pendingCount} pending
-              {finalJob ? ` · Final ${statusLabel(finalJob.status)}` : ""}
+              {manualFocused
+                ? `${selectedManual.length} plays selected · ${formatTimestamp(totalManualDuration(manualClips))}`
+                : `${acceptedCount} kept · ${rejectedCount} rejected · ${pendingCount} pending${
+                    finalJob ? ` · Final ${statusLabel(finalJob.status)}` : ""
+                  }`}
             </small>
           </div>
           {error && (
@@ -2748,7 +4423,7 @@ export default function Home() {
             </button>
           )}
         </div>
-        <div className="approval-actions">
+        {!manualFocused && <div className="approval-actions">
           {finalJob?.status === "succeeded" && (
             <div className="output-actions" aria-label="Final output actions">
               <button
@@ -2771,8 +4446,13 @@ export default function Home() {
               )}
               <button
                 className="secondary-button"
-                disabled
-                title="Available after desktop packaging in Batch 3"
+                disabled={!desktopMode || !finalJob.output_path}
+                onClick={() => void revealFinalOutput()}
+                title={
+                  desktopMode
+                    ? "Show the final render in Finder"
+                    : "Available in the Cutroom desktop app"
+                }
               >
                 Open folder
               </button>
@@ -2811,7 +4491,7 @@ export default function Home() {
           >
             Render final
           </button>
-        </div>
+        </div>}
       </footer>
     </main>
   );

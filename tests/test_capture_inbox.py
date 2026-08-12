@@ -134,7 +134,7 @@ def test_checksum_failure_does_not_leave_partial_or_session(
     assert report["failed_count"] == 1
     assert "checksum" in report["items"][0]["message"].lower()
     assert client.get(f"/api/v1/projects/{project['id']}/capture-sessions").json() == []
-    imports = settings.data_dir / "projects" / project["id"] / "imports"
+    imports = Path(project["workspace_path"]) / "imports"
     assert not (imports / f"{session_id}.mkv").exists()
     assert not (imports / f"{session_id}.mkv.partial").exists()
 

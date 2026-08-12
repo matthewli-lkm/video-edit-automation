@@ -12,6 +12,7 @@ from video_edit_automation.api.schemas import (
     AutomaticGamingHighlightPlanResponse,
     CaptureSessionCreateRequest,
     CaptureSessionHighlightPlanRequest,
+    DesktopDiagnosticsResponse,
     GameDetectionRequest,
     GamingHighlightPlanRequest,
     GamingHighlightPlanResponse,
@@ -21,6 +22,8 @@ from video_edit_automation.api.schemas import (
     HighlightReviewSnapshotResponse,
     HumanPlanApprovalRequest,
     HumanPlanRevisionRequest,
+    ManualGamingHighlightPlanRequest,
+    ManualGamingHighlightPlanResponse,
     PlanCreateRequest,
     PlanGenerateRequest,
     PlanWithValidation,
@@ -103,6 +106,12 @@ def health(request: Request) -> HealthResponse:
             else "disabled"
         ),
     )
+
+
+@router.get("/api/v1/desktop/diagnostics", response_model=DesktopDiagnosticsResponse)
+def desktop_diagnostics(request: Request) -> DesktopDiagnosticsResponse:
+    diagnostics = _container(request).diagnostics.inspect()
+    return DesktopDiagnosticsResponse.model_validate(diagnostics.model_dump())
 
 
 @router.get("/api/v1/capture-inbox/status", response_model=CaptureInboxStatus)
@@ -369,6 +378,32 @@ def create_automatic_gaming_highlight_plan(
     )
 
 
+@router.post(
+    "/api/v1/projects/{project_id}/assets/{asset_id}/gaming/manual-highlight-plans",
+    response_model=ManualGamingHighlightPlanResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_manual_gaming_highlight_plan(
+    project_id: UUID,
+    asset_id: UUID,
+    payload: ManualGamingHighlightPlanRequest,
+    request: Request,
+) -> ManualGamingHighlightPlanResponse:
+    result = _container(request).manual_gaming.create_plan(
+        project_id=project_id,
+        asset_id=asset_id,
+        brief=payload.brief,
+        clips=payload.clips,
+    )
+    return ManualGamingHighlightPlanResponse(
+        analysis=result.analysis,
+        plan=result.plan,
+        validation=result.validation,
+        selected_candidates=result.selected_candidates,
+        review_session=result.review_session,
+    )
+
+
 @router.get(
     "/api/v1/projects/{project_id}/gaming/highlight-reviews",
     response_model=list[HighlightReviewSession],
@@ -621,6 +656,6 @@ def download_job_media(job_id: UUID, request: Request) -> FileResponse:
     return FileResponse(
         output,
         media_type="video/mp4",
-        filename=f"cutroom-{job.id}.mp4",
+        filename=output.name,
         content_disposition_type="attachment",
     )

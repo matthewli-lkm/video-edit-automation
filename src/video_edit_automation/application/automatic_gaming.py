@@ -15,9 +15,14 @@ from video_edit_automation.application.review import HighlightReviewService
 from video_edit_automation.domain.errors import (
     AnalyzerUnavailableError,
     EntityNotFoundError,
+    InvalidEditPlanError,
     MediaToolError,
 )
-from video_edit_automation.domain.gaming import HighlightAnalysis, HighlightCandidate
+from video_edit_automation.domain.gaming import (
+    HighlightAnalysis,
+    HighlightCandidate,
+    HighlightSignal,
+)
 from video_edit_automation.domain.models import EditBrief, EditPlan, PlanValidationReport
 from video_edit_automation.domain.review import HighlightReviewSession
 from video_edit_automation.infrastructure.paths import WorkspaceManager
@@ -35,6 +40,8 @@ class AutomaticGamingHighlightResult:
 
 class AutomaticGamingHighlightService:
     """Turns analyzer evidence into a persisted, validated gaming edit plan."""
+
+    _AUTOMATION_EVENTS = frozenset({"champion_kill", "multi_kill", "team_fight"})
 
     def __init__(
         self,
@@ -86,11 +93,16 @@ class AutomaticGamingHighlightService:
             raise MediaToolError("Gaming analyzer returned a signal for a different media asset")
         self.repository.save_highlight_analysis(project_id, analysis)
         analysis_path = self._persist_analysis(project_id, analysis)
+        automation_signals = self._automation_signals(analysis.signals)
+        if not automation_signals:
+            raise InvalidEditPlanError(
+                "No kills or team fights were detected. Try Manual mode for this recording."
+            )
         plan, validation, selected = self.gaming.create_plan(
             project_id=project_id,
             brief=brief,
             profile_id=profile_id,
-            signals=analysis.signals,
+            signals=automation_signals,
             max_highlights=max_highlights,
         )
         review_session = self.reviews.create_session(
@@ -108,6 +120,17 @@ class AutomaticGamingHighlightService:
             selected_candidates=selected,
             review_session=review_session,
         )
+
+    @classmethod
+    def _automation_signals(
+        cls,
+        signals: list[HighlightSignal],
+    ) -> list[HighlightSignal]:
+        return [
+            signal
+            for signal in signals
+            if signal.normalized_event_name in cls._AUTOMATION_EVENTS
+        ]
 
     def _persist_analysis(
         self,

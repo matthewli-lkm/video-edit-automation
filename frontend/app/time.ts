@@ -54,6 +54,27 @@ export function clampBoundary(
   );
 }
 
+export function moveClipRange(
+  start: number,
+  end: number,
+  deltaSeconds: number,
+  sourceDuration: number,
+) {
+  const safeDuration = Math.max(sourceDuration, MINIMUM_CLIP_GAP_SECONDS);
+  const clipDuration = Math.min(
+    safeDuration,
+    Math.max(MINIMUM_CLIP_GAP_SECONDS, roundToTenths(end - start)),
+  );
+  const nextStart = Math.min(
+    Math.max(0, roundToTenths(start + deltaSeconds)),
+    Math.max(0, roundToTenths(safeDuration - clipDuration)),
+  );
+  return {
+    start: nextStart,
+    end: roundToTenths(nextStart + clipDuration),
+  };
+}
+
 export function createBoundaryWindow(
   start: number,
   end: number,
@@ -64,5 +85,20 @@ export function createBoundaryWindow(
   return {
     start: Math.max(0, roundToTenths(start - contextSeconds)),
     end: Math.min(safeDuration, roundToTenths(end + contextSeconds)),
+  };
+}
+
+export function positionRangeInWindow(
+  start: number,
+  end: number,
+  windowStart: number,
+  windowEnd: number,
+) {
+  const duration = Math.max(MINIMUM_CLIP_GAP_SECONDS, windowEnd - windowStart);
+  const left = Math.max(0, Math.min(100, ((start - windowStart) / duration) * 100));
+  const right = Math.max(left, Math.min(100, ((end - windowStart) / duration) * 100));
+  return {
+    left,
+    width: right - left,
   };
 }

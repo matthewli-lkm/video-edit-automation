@@ -53,7 +53,8 @@ class ProjectService:
 
     def create(self, name: str) -> Project:
         project = Project(name=name)
-        self.workspace.ensure_project(project.id)
+        workspace_path = self.workspace.create_project(project.id, project.name)
+        project = project.model_copy(update={"workspace_path": workspace_path})
         self.repository.save_project(project)
         return project
 
@@ -659,7 +660,8 @@ class RenderService:
     ) -> tuple[Job, bool]:
         plan, _assets = self._load_render_context(project_id, plan_id)
         if preset.profile == RenderProfile.FINAL:
-            approved = any(
+            manually_trimmed = plan.generated_by == "manual-workflow"
+            approved = manually_trimmed or any(
                 state.current_plan_id == plan.id
                 and any(
                     approval.id == state.active_approval_id
@@ -695,6 +697,13 @@ class RenderService:
                     project_id,
                     job.id,
                     preset.profile.value,
+                    filename=(
+                        plan.segments[0].purpose
+                        if preset.profile == RenderProfile.FINAL
+                        and len(plan.segments) == 1
+                        and plan.segments[0].purpose
+                        else f"{plan.title} highlight reel"
+                    ),
                 )
             }
         )
